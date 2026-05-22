@@ -592,7 +592,7 @@
 // ============================================
 const SUPABASE_URL = 'https://opyhlmtgyuuatevwyfpl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KYRaGl-FYPmBPB185Y3Plw_YpemIWOn';
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================
 // STATE (in-memory cache, synced from Supabase)
@@ -614,7 +614,7 @@ const state = {
 async function loadAllData() {
   try {
     // Settings (jeden řádek)
-    const { data: settingsRow, error: sErr } = await supabase
+    const { data: settingsRow, error: sErr } = await db
       .from('settings').select('*').eq('id', 1).maybeSingle();
     if (sErr) console.error('Settings error:', sErr);
     if (settingsRow && settingsRow.is_setup) {
@@ -628,7 +628,7 @@ async function loadAllData() {
     }
 
     // Members
-    const { data: membersData, error: mErr } = await supabase
+    const { data: membersData, error: mErr } = await db
       .from('members').select('*').order('name');
     if (mErr) console.error('Members error:', mErr);
     state.members = (membersData || []).map(m => ({
@@ -643,7 +643,7 @@ async function loadAllData() {
     }));
 
     // Trainings
-    const { data: trainingsData, error: tErr } = await supabase
+    const { data: trainingsData, error: tErr } = await db
       .from('trainings').select('*').order('datetime');
     if (tErr) console.error('Trainings error:', tErr);
     state.trainings = (trainingsData || []).map(t => ({
@@ -661,7 +661,7 @@ async function loadAllData() {
     }));
 
     // Transactions
-    const { data: txData, error: txErr } = await supabase
+    const { data: txData, error: txErr } = await db
       .from('transactions').select('*').order('created_at', { ascending: false });
     if (txErr) console.error('Transactions error:', txErr);
     state.transactions = (txData || []).map(tx => ({
@@ -693,7 +693,7 @@ async function loadAllData() {
 // ============================================
 async function saveSetup() {
   if (!state.setup) return;
-  const { error } = await supabase.from('settings').upsert({
+  const { error } = await db.from('settings').upsert({
     id: 1,
     club_name: state.setup.clubName,
     bank_account: state.setup.bankAccount || '',
@@ -706,7 +706,7 @@ async function saveSetup() {
 }
 
 async function saveMember(member) {
-  const { error } = await supabase.from('members').upsert({
+  const { error } = await db.from('members').upsert({
     id: member.id,
     name: member.name,
     email: member.email,
@@ -728,24 +728,24 @@ async function saveMembersBulk(members) {
     is_active: m.isActive !== false,
     balance: m.balance || 0
   }));
-  const { error } = await supabase.from('members').upsert(rows);
+  const { error } = await db.from('members').upsert(rows);
   if (error) console.error('saveMembersBulk:', error);
 }
 
 async function deleteMemberFromDb(memberId) {
-  await supabase.from('transactions').delete().eq('member_id', memberId);
+  await db.from('transactions').delete().eq('member_id', memberId);
   // Remove from trainings registrations
   for (const t of state.trainings) {
     if (t.registrations.includes(memberId) || (t.declined || []).includes(memberId)) {
       await saveTraining(t);
     }
   }
-  const { error } = await supabase.from('members').delete().eq('id', memberId);
+  const { error } = await db.from('members').delete().eq('id', memberId);
   if (error) console.error('deleteMember:', error);
 }
 
 async function saveTraining(training) {
-  const { error } = await supabase.from('trainings').upsert({
+  const { error } = await db.from('trainings').upsert({
     id: training.id,
     datetime: training.datetime,
     venue: training.venue,
@@ -761,13 +761,13 @@ async function saveTraining(training) {
 }
 
 async function deleteTrainingFromDb(trainingId) {
-  await supabase.from('transactions').delete().eq('training_id', trainingId);
-  const { error } = await supabase.from('trainings').delete().eq('id', trainingId);
+  await db.from('transactions').delete().eq('training_id', trainingId);
+  const { error } = await db.from('trainings').delete().eq('id', trainingId);
   if (error) console.error('deleteTraining:', error);
 }
 
 async function saveTransaction(tx) {
-  const { error } = await supabase.from('transactions').upsert({
+  const { error } = await db.from('transactions').upsert({
     id: tx.id,
     member_id: tx.memberId,
     amount: tx.amount,
@@ -782,7 +782,7 @@ async function saveTransaction(tx) {
 }
 
 async function deleteTransactionsByTraining(trainingId) {
-  const { error } = await supabase.from('transactions').delete().eq('training_id', trainingId);
+  const { error } = await db.from('transactions').delete().eq('training_id', trainingId);
   if (error) console.error('deleteTransactionsByTraining:', error);
 }
 
@@ -810,10 +810,10 @@ function setCurrentUser(userId) {
 }
 
 async function resetAllData() {
-  await supabase.from('transactions').delete().neq('id', '___never___');
-  await supabase.from('trainings').delete().neq('id', '___never___');
-  await supabase.from('members').delete().neq('id', '___never___');
-  await supabase.from('settings').delete().eq('id', 1);
+  await db.from('transactions').delete().neq('id', '___never___');
+  await db.from('trainings').delete().neq('id', '___never___');
+  await db.from('members').delete().neq('id', '___never___');
+  await db.from('settings').delete().eq('id', 1);
   state.setup = null;
   state.members = [];
   state.trainings = [];
