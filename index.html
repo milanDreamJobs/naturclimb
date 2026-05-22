@@ -612,11 +612,17 @@ const state = {
 // DATA LOADING FROM SUPABASE
 // ============================================
 async function loadAllData() {
+  console.log('🔄 Loading data from Supabase...');
+  console.log('   URL:', SUPABASE_URL);
   try {
     // Settings (jeden řádek)
     const { data: settingsRow, error: sErr } = await db
       .from('settings').select('*').eq('id', 1).maybeSingle();
-    if (sErr) console.error('Settings error:', sErr);
+    if (sErr) {
+      console.error('❌ Settings error:', sErr);
+      alert('❌ CHYBA NAČÍTÁNÍ NASTAVENÍ:\n\n' + sErr.message + '\n\nMožné příčiny:\n- Špatný API klíč\n- Tabulka nebyla vytvořena\n- Špatná URL\n\nDetail: ' + JSON.stringify(sErr));
+    }
+    console.log('📋 Settings row:', settingsRow);
     if (settingsRow && settingsRow.is_setup) {
       state.setup = {
         isSetup: true,
@@ -630,7 +636,11 @@ async function loadAllData() {
     // Members
     const { data: membersData, error: mErr } = await db
       .from('members').select('*').order('name');
-    if (mErr) console.error('Members error:', mErr);
+    if (mErr) {
+      console.error('❌ Members error:', mErr);
+      alert('❌ CHYBA NAČÍTÁNÍ ČLENŮ:\n\n' + mErr.message);
+    }
+    console.log('👥 Members loaded:', (membersData || []).length);
     state.members = (membersData || []).map(m => ({
       id: m.id,
       name: m.name,
@@ -643,9 +653,8 @@ async function loadAllData() {
     }));
 
     // SAFETY: Pokud existují členové ale chybí setup row, znamená to, že systém už je nastaven.
-    // Možná setup row v Supabase neexistuje kvůli chybě, ale aplikace by neměla zobrazit setup wizard.
     if (state.members.length > 0 && !state.setup) {
-      console.warn('Members exist but no setup row - using defaults');
+      console.warn('⚠ Members exist but no setup row - using defaults');
       state.setup = {
         isSetup: true,
         clubName: 'NaturClimb',
@@ -653,14 +662,17 @@ async function loadAllData() {
         debtLimit: -500,
         creditLimit: 500
       };
-      // Try to save it back
       try { await saveSetup(); } catch (e) { console.error(e); }
     }
 
     // Trainings
     const { data: trainingsData, error: tErr } = await db
       .from('trainings').select('*').order('datetime');
-    if (tErr) console.error('Trainings error:', tErr);
+    if (tErr) {
+      console.error('❌ Trainings error:', tErr);
+      alert('❌ CHYBA NAČÍTÁNÍ TRÉNINKŮ:\n\n' + tErr.message);
+    }
+    console.log('🧗 Trainings loaded:', (trainingsData || []).length);
     state.trainings = (trainingsData || []).map(t => ({
       id: t.id,
       datetime: t.datetime,
@@ -678,7 +690,10 @@ async function loadAllData() {
     // Transactions
     const { data: txData, error: txErr } = await db
       .from('transactions').select('*').order('created_at', { ascending: false });
-    if (txErr) console.error('Transactions error:', txErr);
+    if (txErr) {
+      console.error('❌ Transactions error:', txErr);
+    }
+    console.log('💰 Transactions loaded:', (txData || []).length);
     state.transactions = (txData || []).map(tx => ({
       id: tx.id,
       memberId: tx.member_id,
@@ -691,11 +706,11 @@ async function loadAllData() {
       createdAt: tx.created_at
     }));
 
-    // Recompute all balances from transactions (zdroj pravdy)
     state.members.forEach(m => recalcBalance(m.id));
+    console.log('✅ All data loaded successfully');
   } catch (err) {
-    console.error('Failed to load data:', err);
-    showToast('Chyba načítání dat. Zkus obnovit stránku.');
+    console.error('❌ Failed to load data:', err);
+    alert('❌ ZÁSADNÍ CHYBA NAČÍTÁNÍ DAT:\n\n' + err.message + '\n\nZkontroluj F12 → Console.');
   }
 
   // Session (lokálně v prohlížeči)
@@ -717,7 +732,12 @@ async function saveSetup() {
     is_setup: true,
     updated_at: new Date().toISOString()
   });
-  if (error) { console.error('saveSetup:', error); showToast('Chyba ukládání'); }
+  if (error) {
+    console.error('saveSetup error:', error);
+    alert('❌ CHYBA UKLÁDÁNÍ NASTAVENÍ:\n\n' + error.message + '\n\nDetail: ' + JSON.stringify(error));
+  } else {
+    console.log('✅ Setup saved to Supabase');
+  }
 }
 
 async function saveMember(member) {
@@ -730,7 +750,12 @@ async function saveMember(member) {
     is_active: member.isActive !== false,
     balance: member.balance || 0
   });
-  if (error) { console.error('saveMember:', error); showToast('Chyba ukládání člena'); }
+  if (error) {
+    console.error('saveMember error:', error);
+    alert('❌ CHYBA UKLÁDÁNÍ ČLENA:\n\n' + error.message + '\n\nDetail: ' + JSON.stringify(error));
+  } else {
+    console.log('✅ Member saved:', member.name);
+  }
 }
 
 async function saveMembersBulk(members) {
