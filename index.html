@@ -642,6 +642,21 @@ async function loadAllData() {
       createdAt: m.created_at
     }));
 
+    // SAFETY: Pokud existují členové ale chybí setup row, znamená to, že systém už je nastaven.
+    // Možná setup row v Supabase neexistuje kvůli chybě, ale aplikace by neměla zobrazit setup wizard.
+    if (state.members.length > 0 && !state.setup) {
+      console.warn('Members exist but no setup row - using defaults');
+      state.setup = {
+        isSetup: true,
+        clubName: 'NaturClimb',
+        bankAccount: '',
+        debtLimit: -500,
+        creditLimit: 500
+      };
+      // Try to save it back
+      try { await saveSetup(); } catch (e) { console.error(e); }
+    }
+
     // Trainings
     const { data: trainingsData, error: tErr } = await db
       .from('trainings').select('*').order('datetime');
@@ -1051,6 +1066,25 @@ async function finishSetup() {
   if (!adminEmail || !adminEmail.includes('@') || !adminEmail.includes('.')) {
     showToast('Email je povinný – přihlašuješ se přes něj');
     return;
+  }
+
+  // SAFETY CHECK: Před spuštěním setupu se ujistíme že databáze je opravdu prázdná
+  // (předchází přepsání už nastavené aplikace)
+  try {
+    const { data: existingMembers, error } = await db.from('members').select('id, email').limit(5);
+    if (!error && existingMembers && existingMembers.length > 0) {
+      const matchingMember = existingMembers.find(m => m.email && m.email.toLowerCase() === adminEmail);
+      if (matchingMember) {
+        showToast('Tento email už v aplikaci existuje. Přihlaš se na hlavní obrazovce.');
+      } else {
+        showToast('Aplikace už je nastavena. Obnov stránku (F5).');
+      }
+      // Force reload to refresh state
+      setTimeout(() => location.reload(), 2000);
+      return;
+    }
+  } catch (e) {
+    console.error('Safety check failed:', e);
   }
 
   state.setup = {
