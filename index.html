@@ -592,7 +592,14 @@
 // ============================================
 const SUPABASE_URL = 'https://opyhlmtgyuuatevwyfpl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KYRaGl-FYPmBPB185Y3Plw_YpemIWOn';
-const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const CLUB_TOKEN = 'naturclimb_2024_tajny_klub';
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  global: {
+    headers: {
+      'x-club-token': CLUB_TOKEN
+    }
+  }
+});
 
 // ============================================
 // STATE (in-memory cache, synced from Supabase)
