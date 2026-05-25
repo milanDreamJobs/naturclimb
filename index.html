@@ -1195,19 +1195,38 @@ function tryLoginByEmail() {
     return;
   }
 
+  // RATE LIMITING: Zpoždění 1 sekunda aby nedávalo smysl brute-force
+  input.disabled = true;
+  let countdown = 1;
+  const originalText = input.value;
+  
+  const timer = setInterval(() => {
+    countdown--;
+    if (countdown === 0) {
+      clearInterval(timer);
+      input.disabled = false;
+    }
+  }, 1000);
+
   // Najdi člena s tímto emailem
   const member = state.members.find(m => m.email && m.email.toLowerCase() === email);
 
   if (!member) {
     showLoginError('Tento email v systému nenajdu. Zkontroluj překlep nebo požádej admina o přidání.');
+    setTimeout(() => {
+      input.disabled = false;
+      clearInterval(timer);
+    }, 1000);
     return;
   }
 
   // Nalezen → přihlásit
-  setCurrentUser(member.id);
-  state.currentView = member.isAdmin ? 'admin' : 'member';
-  showToast(`Vítej, ${member.name}! 👋`);
-  render();
+  setTimeout(() => {
+    setCurrentUser(member.id);
+    state.currentView = member.isAdmin ? 'admin' : 'member';
+    showToast(`Vítej, ${member.name}! 👋`);
+    render();
+  }, 1000);
 }
 
 function showLoginError(msg) {
