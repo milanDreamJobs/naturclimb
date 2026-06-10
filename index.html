@@ -3,13 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy"
-  content="default-src 'self';
-           script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;
-           style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
-           font-src https://fonts.gstatic.com;
-           img-src 'self' data:;
-           connect-src https://opyhlmtgyuuatevwyfpl.supabase.co;">
 <title>NaturClimb</title>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -531,6 +524,63 @@
   .attendee-name { font-weight: 500; font-size: 15px; flex: 1; }
   .attendee.you .attendee-name { font-weight: 700; }
 
+  /* Parťák hledač */
+  .attendee.seeking-partner {
+    background: linear-gradient(135deg, rgba(212, 115, 26, 0.08), rgba(212, 115, 26, 0.04));
+    border: 1.5px solid rgba(212, 115, 26, 0.3);
+    border-radius: 12px;
+    cursor: pointer;
+  }
+  .attendee.seeking-partner:active { opacity: 0.7; }
+  .partner-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    background: var(--accent);
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 20px;
+    margin-left: 6px;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .partner-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: rgba(212, 115, 26, 0.06);
+    border: 1.5px dashed rgba(212, 115, 26, 0.3);
+    border-radius: 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .partner-checkbox-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .partner-checkbox-label {
+    font-size: 14px;
+    color: var(--ink);
+    font-weight: 500;
+  }
+  .partner-email-reveal {
+    margin-top: 6px;
+    padding: 8px 12px;
+    background: rgba(26, 95, 90, 0.08);
+    border-radius: 8px;
+    font-size: 13px;
+    color: var(--primary);
+    font-weight: 500;
+    word-break: break-all;
+  }
+
   /* Toast */
   .toast {
     position: fixed; bottom: 24px; left: 50%;
@@ -599,14 +649,7 @@
 // ============================================
 const SUPABASE_URL = 'https://opyhlmtgyuuatevwyfpl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KYRaGl-FYPmBPB185Y3Plw_YpemIWOn';
-const CLUB_TOKEN = 'naturclimb_2024_tajny_klub';
-const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-  global: {
-    headers: {
-      'x-club-token': CLUB_TOKEN
-    }
-  }
-});
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // ============================================
 // STATE (in-memory cache, synced from Supabase)
@@ -632,11 +675,7 @@ async function loadAllData() {
     // Settings (jeden řádek)
     const { data: settingsRow, error: sErr } = await db
       .from('settings').select('*').eq('id', 1).maybeSingle();
-    if (sErr) {
-      console.error('❌ Settings error:', sErr);
-      alert('❌ CHYBA NAČÍTÁNÍ NASTAVENÍ:\n\n' + sErr.message + '\n\nMožné příčiny:\n- Špatný API klíč\n- Tabulka nebyla vytvořena\n- Špatná URL\n\nDetail: ' + JSON.stringify(sErr));
-    }
-    console.log('📋 Settings row:', settingsRow);
+    if (sErr) console.error('❌ Settings error:', sErr);
     if (settingsRow && settingsRow.is_setup) {
       state.setup = {
         isSetup: true,
@@ -650,10 +689,7 @@ async function loadAllData() {
     // Members
     const { data: membersData, error: mErr } = await db
       .from('members').select('*').order('name');
-    if (mErr) {
-      console.error('❌ Members error:', mErr);
-      alert('❌ CHYBA NAČÍTÁNÍ ČLENŮ:\n\n' + mErr.message);
-    }
+    if (mErr) console.error('❌ Members error:', mErr);
     console.log('👥 Members loaded:', (membersData || []).length);
     state.members = (membersData || []).map(m => ({
       id: m.id,
@@ -666,9 +702,9 @@ async function loadAllData() {
       createdAt: m.created_at
     }));
 
-    // SAFETY: Pokud existují členové ale chybí setup row, znamená to, že systém už je nastaven.
-    if (state.members.length > 0 && !state.setup) {
-      console.warn('⚠ Members exist but no setup row - using defaults');
+    // Pokud settings neexistují, vytvoříme výchozí (bez setup wizardu)
+    if (!state.setup) {
+      console.warn('⚠ No settings row found - creating defaults');
       state.setup = {
         isSetup: true,
         clubName: 'NaturClimb',
@@ -676,16 +712,13 @@ async function loadAllData() {
         debtLimit: -500,
         creditLimit: 500
       };
-      try { await saveSetup(); } catch (e) { console.error(e); }
+      try { await saveSetup(); } catch (e) { console.error('Could not save defaults:', e); }
     }
 
     // Trainings
     const { data: trainingsData, error: tErr } = await db
       .from('trainings').select('*').order('datetime');
-    if (tErr) {
-      console.error('❌ Trainings error:', tErr);
-      alert('❌ CHYBA NAČÍTÁNÍ TRÉNINKŮ:\n\n' + tErr.message);
-    }
+    if (tErr) console.error('❌ Trainings error:', tErr);
     console.log('🧗 Trainings loaded:', (trainingsData || []).length);
     state.trainings = (trainingsData || []).map(t => ({
       id: t.id,
@@ -695,6 +728,8 @@ async function loadAllData() {
       status: t.status,
       registrations: t.registrations || [],
       declined: t.declined || [],
+      lookingForPartner: t.looking_for_partner || [],
+      arrivalTimes: t.arrival_times || {},
       attendedIds: t.attended_ids || [],
       _settlementAttendees: t.settlement_attendees,
       settledAt: t.settled_at,
@@ -724,7 +759,7 @@ async function loadAllData() {
     console.log('✅ All data loaded successfully');
   } catch (err) {
     console.error('❌ Failed to load data:', err);
-    alert('❌ ZÁSADNÍ CHYBA NAČÍTÁNÍ DAT:\n\n' + err.message + '\n\nZkontroluj F12 → Console.');
+    showToast('Chyba načítání dat. Zkus obnovit stránku.');
   }
 
   // Session (lokálně v prohlížeči)
@@ -748,9 +783,7 @@ async function saveSetup() {
   });
   if (error) {
     console.error('saveSetup error:', error);
-    alert('❌ CHYBA UKLÁDÁNÍ NASTAVENÍ:\n\n' + error.message + '\n\nDetail: ' + JSON.stringify(error));
-  } else {
-    console.log('✅ Setup saved to Supabase');
+    showToast('Chyba ukládání nastavení');
   }
 }
 
@@ -766,9 +799,7 @@ async function saveMember(member) {
   });
   if (error) {
     console.error('saveMember error:', error);
-    alert('❌ CHYBA UKLÁDÁNÍ ČLENA:\n\n' + error.message + '\n\nDetail: ' + JSON.stringify(error));
-  } else {
-    console.log('✅ Member saved:', member.name);
+    showToast('Chyba ukládání člena');
   }
 }
 
@@ -807,6 +838,8 @@ async function saveTraining(training) {
     status: training.status || 'open',
     registrations: training.registrations || [],
     declined: training.declined || [],
+    looking_for_partner: training.lookingForPartner || [],
+    arrival_times: training.arrivalTimes || {},
     attended_ids: training.attendedIds || [],
     settlement_attendees: training._settlementAttendees || null,
     settled_at: training.settledAt || null
@@ -1012,9 +1045,36 @@ function getSettings() {
 function render() {
   const app = document.getElementById('app');
   const fab = document.getElementById('fab');
+  const isLocal = window.location.protocol === 'file:';
 
+  // Demo banner
+  let existingBanner = document.getElementById('demo-banner');
+  if (isLocal && !existingBanner) {
+    const banner = document.createElement('div');
+    banner.id = 'demo-banner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#d4731a;color:white;text-align:center;padding:6px 12px;font-size:13px;font-weight:600;';
+    banner.innerHTML = '🎭 DEMO REŽIM – data se neukládají – <a href="https://naturclimb.cz" style="color:white;text-decoration:underline;">přejít na ostrý web</a>';
+    document.body.prepend(banner);
+    // Posun obsahu dolů
+    document.body.style.paddingTop = '32px';
+  }
+
+  // Pokud se data teprve načítají nebo Supabase nereaguje
   if (!state.setup) {
-    app.innerHTML = renderSetup();
+    app.innerHTML = `
+      <div style="text-align: center; padding: 60px 24px; color: white; text-shadow: 0 2px 6px rgba(0,0,0,0.5);">
+        <div style="font-size: 56px; margin-bottom: 16px;">🧗</div>
+        <div style="font-family: 'Bricolage Grotesque', sans-serif; font-size: 24px; font-weight: 700; margin-bottom: 12px;">NaturClimb</div>
+        <div style="font-size: 16px; opacity: 0.9; margin-bottom: 32px;">Aplikace se připojuje...</div>
+        <div style="font-size: 13px; opacity: 0.7; max-width: 280px; margin: 0 auto; line-height: 1.6;">
+          Pokud se tato obrazovka nezobrazí déle než 10 sekund,<br>
+          zkus obnovit stránku nebo kontaktuj admina.
+        </div>
+        <button onclick="location.reload()" style="margin-top: 24px; padding: 12px 28px; background: rgba(255,255,255,0.2); color: white; border: 1.5px solid rgba(255,255,255,0.4); border-radius: 12px; font-size: 15px; cursor: pointer; backdrop-filter: blur(8px);">
+          🔄 Obnovit stránku
+        </button>
+      </div>
+    `;
     fab.classList.add('hidden');
     return;
   }
@@ -1055,102 +1115,6 @@ function onFabClick() {
   if (state.adminTab === 'dashboard') openTrainingForm();
 }
 
-// ============================================
-// SETUP (první spuštění)
-// ============================================
-function renderSetup() {
-  return `
-    <div class="login-screen">
-      <div class="club-icon">🧗</div>
-      <h1>Vítej!</h1>
-      <p>Pojďme rychle nastavit aplikaci pro váš oddíl.</p>
-    </div>
-
-    <div class="setup-step">
-      <h3>1. Název oddílu</h3>
-      <input type="text" id="setup-clubname" placeholder="Např. Horolezecký oddíl NaturClimb" value="NaturClimb" style="width: 100%; padding: 12px; border: 1.5px solid var(--line); border-radius: 10px; font-family: inherit; font-size: 15px;">
-    </div>
-
-    <div class="setup-step">
-      <h3>2. Číslo účtu (volitelné)</h3>
-      <p>Bude zobrazeno členům, kteří mají dluh, aby věděli kam poslat peníze.</p>
-      <input type="text" id="setup-bank" placeholder="1234567890/0100" style="width: 100%; padding: 12px; border: 1.5px solid var(--line); border-radius: 10px; font-family: inherit; font-size: 15px;">
-    </div>
-
-    <div class="setup-step">
-      <h3>3. První admin (ty)</h3>
-      <p>Zadej své jméno a email. Email používáš pro přihlášení do aplikace.</p>
-      <div class="form-group" style="margin-bottom: 10px;">
-        <input type="text" id="setup-admin-name" placeholder="Tvoje jméno" style="width: 100%; padding: 12px; border: 1.5px solid var(--line); border-radius: 10px; font-family: inherit; font-size: 15px;">
-      </div>
-      <div class="form-group">
-        <input type="email" id="setup-admin-email" placeholder="tvuj@email.cz" style="width: 100%; padding: 12px; border: 1.5px solid var(--line); border-radius: 10px; font-family: inherit; font-size: 15px;">
-      </div>
-    </div>
-
-    <button class="btn btn-primary" style="width: 100%;" onclick="finishSetup()">Dokončit nastavení</button>
-  `;
-}
-
-async function finishSetup() {
-  const clubName = document.getElementById('setup-clubname').value.trim();
-  const bank = document.getElementById('setup-bank').value.trim();
-  const adminName = document.getElementById('setup-admin-name').value.trim();
-  const adminEmail = document.getElementById('setup-admin-email').value.trim().toLowerCase();
-
-  if (!clubName || !adminName) {
-    showToast('Vyplň prosím název oddílu a své jméno');
-    return;
-  }
-  if (!adminEmail || !adminEmail.includes('@') || !adminEmail.includes('.')) {
-    showToast('Email je povinný – přihlašuješ se přes něj');
-    return;
-  }
-
-  // SAFETY CHECK: Před spuštěním setupu se ujistíme že databáze je opravdu prázdná
-  // (předchází přepsání už nastavené aplikace)
-  try {
-    const { data: existingMembers, error } = await db.from('members').select('id, email').limit(5);
-    if (!error && existingMembers && existingMembers.length > 0) {
-      const matchingMember = existingMembers.find(m => m.email && m.email.toLowerCase() === adminEmail);
-      if (matchingMember) {
-        showToast('Tento email už v aplikaci existuje. Přihlaš se na hlavní obrazovce.');
-      } else {
-        showToast('Aplikace už je nastavena. Obnov stránku (F5).');
-      }
-      // Force reload to refresh state
-      setTimeout(() => location.reload(), 2000);
-      return;
-    }
-  } catch (e) {
-    console.error('Safety check failed:', e);
-  }
-
-  state.setup = {
-    isSetup: true,
-    clubName,
-    bankAccount: bank,
-    debtLimit: -500,
-    creditLimit: 500
-  };
-
-  const admin = {
-    id: genId(),
-    name: adminName,
-    email: adminEmail,
-    isAdmin: true,
-    balance: 0,
-    createdAt: new Date().toISOString()
-  };
-  state.members.push(admin);
-  setCurrentUser(admin.id);
-  state.currentView = 'admin';
-
-  await saveSetup();
-  await saveMember(admin);
-  showToast('Aplikace připravena! Vítej ' + adminName + ' 👋');
-  render();
-}
 
 // ============================================
 // LOGIN (přes email)
@@ -1444,8 +1408,22 @@ function renderTrainingCard(t, userId) {
       actions = `<div class="lock-notice">🔒 Uzávěrka prošla (21:00)</div>`;
     }
   } else if (registered) {
+    const seeking = (t.lookingForPartner || []).includes(userId);
+    // Osobní čas příchodu - uložen v t.arrivalTimes jako { memberId: "18:00" }
+    const arrivalTimes = t.arrivalTimes || {};
+    const myArrival = arrivalTimes[userId] || '18:00';
     actions = `
       <div class="registered-status">✓ Jsi přihlášen</div>
+      <label class="partner-checkbox-row" onclick="toggleSeekingPartner('${t.id}')">
+        <input type="checkbox" ${seeking ? 'checked' : ''} onclick="event.stopPropagation(); toggleSeekingPartner('${t.id}')">
+        <span class="partner-checkbox-label">🧗 Hledám parťáka do dvojice</span>
+      </label>
+      <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; background: rgba(15,32,39,0.04); border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 12px;">
+        <span style="font-size: 13px; color: var(--ink-soft); flex: 1;">🕐 Přijdu v:</span>
+        <button onclick="adjustArrival('${t.id}', -30)" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--paper); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">−</button>
+        <span id="arrival-${t.id}" style="font-size: 16px; font-weight: 700; min-width: 46px; text-align: center;">${myArrival}</span>
+        <button onclick="adjustArrival('${t.id}', +30)" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--paper); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">+</button>
+      </div>
       <button class="btn btn-decline" style="width: 100%; margin-top: 8px;" onclick="resetTrainingChoice('${t.id}')">Změnit</button>
     `;
   } else if (declined) {
@@ -1479,6 +1457,48 @@ function renderTrainingCard(t, userId) {
 
 function goTraining(trainingId) {
   return doGoTraining(trainingId);
+}
+
+async function toggleSeekingPartner(trainingId) {
+  const t = getTraining(trainingId);
+  if (!t || isSettled(t) || isPastDeadline(t)) return;
+  const userId = state.currentUserId;
+  if (!t.lookingForPartner) t.lookingForPartner = [];
+  if (t.lookingForPartner.includes(userId)) {
+    t.lookingForPartner = t.lookingForPartner.filter(id => id !== userId);
+  } else {
+    t.lookingForPartner.push(userId);
+  }
+  await saveTraining(t);
+  render();
+}
+
+async function adjustArrival(trainingId, minutesDelta) {
+  const t = getTraining(trainingId);
+  if (!t || isSettled(t) || isPastDeadline(t)) return;
+  const userId = state.currentUserId;
+
+  // Načti aktuální čas
+  if (!t.arrivalTimes) t.arrivalTimes = {};
+  const current = t.arrivalTimes[userId] || '18:00';
+  const [h, m] = current.split(':').map(Number);
+
+  // Přičti/odečti minuty
+  let totalMinutes = h * 60 + m + minutesDelta;
+  // Limit: 06:00 – 23:30
+  totalMinutes = Math.max(6 * 60, Math.min(23 * 60 + 30, totalMinutes));
+
+  const newH = Math.floor(totalMinutes / 60);
+  const newM = totalMinutes % 60;
+  const newTime = `${String(newH).padStart(2, '0')}:${String(newM).padStart(2, '0')}`;
+
+  t.arrivalTimes[userId] = newTime;
+
+  // Aktualizuj UI hned (bez čekání na uložení)
+  const el = document.getElementById('arrival-' + trainingId);
+  if (el) el.textContent = newTime;
+
+  await saveTraining(t);
 }
 
 async function doGoTraining(trainingId) {
@@ -1537,10 +1557,18 @@ function showAttendeesModal(trainingId) {
   const t = getTraining(trainingId);
   if (!t) return;
   const userId = state.currentUserId;
+  const seekingIds = new Set(t.lookingForPartner || []);
+  const seekingCount = [...t.registrations].filter(id => seekingIds.has(id)).length;
+
   const attendees = t.registrations
     .map(id => getMember(id))
     .filter(Boolean)
     .sort((a, b) => {
+      // Hledající parťáka první
+      const aSeeking = seekingIds.has(a.id) ? 0 : 1;
+      const bSeeking = seekingIds.has(b.id) ? 0 : 1;
+      if (aSeeking !== bSeeking) return aSeeking - bSeeking;
+      // Pak já
       if (a.id === userId) return -1;
       if (b.id === userId) return 1;
       return a.name.localeCompare(b.name);
@@ -1555,20 +1583,51 @@ function showAttendeesModal(trainingId) {
         ${formatTrainingDate(t.datetime)} ${formatTrainingTime(t.datetime)} · ${t.venue}
       </div>
     </div>
+    ${seekingCount > 0 ? `
+      <div style="padding: 8px 12px; background: rgba(212,115,26,0.08); border-radius: 10px; font-size: 13px; color: var(--accent); font-weight: 600; margin-bottom: 12px;">
+        🧗 ${seekingCount} ${seekingCount === 1 ? 'člověk hledá' : seekingCount < 5 ? 'lidé hledají' : 'lidí hledá'} parťáka – klikni pro email
+      </div>
+    ` : ''}
     ${attendees.length === 0 ? `
       <div class="empty-msg">Zatím nikdo. Buď první!</div>
     ` : `
-      <ul style="list-style: none;">
-        ${attendees.map(m => `
-          <li class="attendee ${m.id === userId ? 'you' : ''}">
-            <div class="member-avatar">${getInitials(m.name)}</div>
-            <div class="attendee-name">${m.name}${m.id === userId ? ' (já)' : ''}</div>
-          </li>
-        `).join('')}
+      <ul style="list-style: none;" id="attendees-list">
+        ${attendees.map(m => {
+          const seeking = seekingIds.has(m.id);
+          const isMe = m.id === userId;
+          const arrival = (t.arrivalTimes || {})[m.id];
+          return `
+            <li class="attendee ${isMe ? 'you' : ''} ${seeking ? 'seeking-partner' : ''}"
+                ${seeking && !isMe ? `onclick="toggleEmailReveal('${m.id}', '${m.email || ''}')"` : ''}>
+              <div class="member-avatar" style="${seeking ? 'background: var(--accent);' : ''}">${getInitials(m.name)}</div>
+              <div style="flex: 1;">
+                <div class="attendee-name">
+                  ${m.name}${isMe ? ' (já)' : ''}
+                  ${seeking ? '<span class="partner-badge">🧗 hledá parťáka</span>' : ''}
+                  ${arrival ? `<span style="font-size:12px; color: var(--ink-soft); margin-left: 6px;">🕐 ${arrival}</span>` : ''}
+                </div>
+                ${seeking && !isMe ? `
+                  <div id="email-${m.id}" class="partner-email-reveal" style="display:none;">
+                    📧 ${m.email || 'email není k dispozici'}
+                  </div>
+                ` : ''}
+                ${seeking && isMe ? `
+                  <div style="font-size: 12px; color: var(--ink-soft); margin-top: 2px;">Hledáš parťáka – ostatní vidí tvůj email</div>
+                ` : ''}
+              </div>
+            </li>
+          `;
+        }).join('')}
       </ul>
     `}
   `;
   openModal(html);
+}
+
+function toggleEmailReveal(memberId, email) {
+  const el = document.getElementById('email-' + memberId);
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
 function showHistory() {
@@ -2789,17 +2848,100 @@ function closeModal() {
 }
 
 // ============================================
+// DEMO DATA (pro lokální náhled bez Supabase)
+// ============================================
+function loadDemoData() {
+  console.log('🎭 Demo režim – načítám ukázková data');
+  const now = new Date();
+  const nextTue = new Date(now);
+  nextTue.setDate(now.getDate() + ((2 - now.getDay() + 7) % 7 || 7));
+  nextTue.setHours(18, 0, 0, 0);
+  const nextNextTue = new Date(nextTue);
+  nextNextTue.setDate(nextTue.getDate() + 7);
+  const lastTue = new Date(nextTue);
+  lastTue.setDate(nextTue.getDate() - 7);
+
+  state.setup = {
+    isSetup: true,
+    clubName: 'NaturClimb (DEMO)',
+    bankAccount: '1234567890/0100',
+    debtLimit: -500,
+    creditLimit: 500
+  };
+
+  const demoMembers = [
+    { id: 'demo-1', name: 'Milan Mahy', email: 'milan@naturclimb.cz', isAdmin: true, balance: 200 },
+    { id: 'demo-2', name: 'Petr Svoboda', email: 'petr@email.cz', isAdmin: false, balance: -150 },
+    { id: 'demo-3', name: 'Anna Černá', email: 'anna@gmail.com', isAdmin: false, balance: 0 },
+    { id: 'demo-4', name: 'Honza Veselý', email: 'honza@firma.cz', isAdmin: false, balance: -600 },
+    { id: 'demo-5', name: 'Lucie Horáková', email: 'lucie@seznam.cz', isAdmin: false, balance: 350 },
+    { id: 'demo-6', name: 'Karel Dvořák', email: 'karel@email.cz', isAdmin: false, balance: 100 },
+  ];
+  state.members = demoMembers.map(m => ({ ...m, isActive: true, phone: '', createdAt: now.toISOString() }));
+
+  state.trainings = [
+    {
+      id: 'demo-t1', datetime: nextTue.toISOString(), venue: 'Lezecká stěna Smíchov',
+      price: 100, status: 'open',
+      registrations: ['demo-1', 'demo-2', 'demo-3', 'demo-5'],
+      declined: ['demo-4'],
+      lookingForPartner: ['demo-2', 'demo-3'],
+      attendedIds: [], createdAt: now.toISOString()
+    },
+    {
+      id: 'demo-t2', datetime: nextNextTue.toISOString(), venue: 'Boulder Bar Žižkov',
+      price: 120, status: 'open',
+      registrations: ['demo-1', 'demo-6'],
+      declined: [],
+      lookingForPartner: [],
+      attendedIds: [], createdAt: now.toISOString()
+    },
+    {
+      id: 'demo-t3', datetime: lastTue.toISOString(), venue: 'Lezecká stěna Smíchov',
+      price: 100, status: 'open',
+      registrations: ['demo-1', 'demo-2', 'demo-4'],
+      declined: [],
+      lookingForPartner: [],
+      attendedIds: [], createdAt: now.toISOString()
+    },
+  ];
+
+  state.transactions = [
+    { id: 'demo-tx1', memberId: 'demo-2', amount: -100, type: 'training_charge', description: 'Smíchov', balanceAfter: -150, createdAt: now.toISOString() },
+    { id: 'demo-tx2', memberId: 'demo-4', amount: -100, type: 'training_charge', description: 'Smíchov', balanceAfter: -600, createdAt: now.toISOString() },
+    { id: 'demo-tx3', memberId: 'demo-5', amount: 350, type: 'cash_deposit', description: 'Hotovost', balanceAfter: 350, createdAt: now.toISOString() },
+  ];
+
+  // Přihlas jako admin
+  state.currentUserId = 'demo-1';
+  state.currentView = 'admin';
+  console.log('🎭 Demo data načtena:', {
+    members: state.members.length,
+    trainings: state.trainings.length,
+    currentUserId: state.currentUserId,
+    setup: state.setup?.clubName
+  });
+}
+
+// ============================================
 // INIT
 // ============================================
 (async function init() {
-  // Show loading state
   document.getElementById('app').innerHTML = `
     <div style="text-align: center; padding: 80px 20px; color: white; text-shadow: 0 2px 6px rgba(0,0,0,0.5);">
       <div style="font-size: 48px; margin-bottom: 16px;">🧗</div>
       <div style="font-family: 'Bricolage Grotesque', sans-serif; font-size: 20px;">Načítám...</div>
     </div>
   `;
-  await loadAllData();
+
+  const isLocal = window.location.protocol === 'file:';
+  if (isLocal) {
+    // Demo režim – načti ukázková data, nepotřebujeme Supabase
+    loadDemoData();
+    // Nepřepisuj currentUserId z localStorage v demo módu
+  } else {
+    await loadAllData();
+  }
   render();
 })();
 </script>
