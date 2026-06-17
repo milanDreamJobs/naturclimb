@@ -1487,7 +1487,7 @@ function renderTrainingCard(t, userId) {
     actions = `
       <div class="registered-status">✓ Jsi přihlášen</div>
       <div class="partner-checkbox-row ${seeking ? 'active' : ''}" onclick="toggleSeekingPartner('${t.id}')">
-        <input type="checkbox" ${seeking ? 'checked' : ''} onclick="event.stopPropagation(); event.preventDefault();">
+        <input type="checkbox" ${seeking ? 'checked' : ''} onclick="event.stopPropagation();" onchange="toggleSeekingPartner('${t.id}')">
         <div>
           <div class="partner-checkbox-label">🧗 Hledám parťáka do dvojice</div>
           <div style="font-size:11px; color: var(--ink-soft); margin-top: 2px;">${seeking ? 'Kliknutím zruš' : 'Kliknutím aktivuješ'}</div>
@@ -1535,6 +1535,11 @@ function goTraining(trainingId) {
 }
 
 async function toggleSeekingPartner(trainingId) {
+  // Debounce – zabrání dvojímu volání (div onclick + input onchange)
+  if (toggleSeekingPartner._busy) return;
+  toggleSeekingPartner._busy = true;
+  setTimeout(() => { toggleSeekingPartner._busy = false; }, 300);
+
   const t = getTraining(trainingId);
   if (!t || isSettled(t) || isPastDeadline(t)) return;
   const userId = state.currentUserId;
