@@ -24,6 +24,8 @@
     --secondary-dim: #d0e0eb;
     --green: #2d6e3e;
     --green-dim: #d4e8d8;
+    --semafor-green: #27ae60;
+    --semafor-red: #e74c3c;
     --line: #d8dee2;
     --warning: #b85c2f;
     --warning-bg: #fce5d4;
@@ -321,13 +323,13 @@
   .btn-danger { background: var(--accent); color: white; border-color: var(--accent); }
 
   .registered-status {
-    background: var(--green); color: white;
+    background: var(--semafor-green); color: white;
     padding: 10px 14px; border-radius: 11px;
     text-align: center;
     font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 14px;
   }
   .declined-status-box {
-    background: var(--warning); color: white;
+    background: var(--semafor-red); color: white;
     padding: 10px 14px; border-radius: 11px;
     text-align: center;
     font-family: 'Bricolage Grotesque', sans-serif; font-weight: 700; font-size: 14px;
@@ -553,10 +555,49 @@
     margin-top: 10px;
     padding: 10px 12px;
     background: rgba(212, 115, 26, 0.06);
-    border: 1.5px dashed rgba(212, 115, 26, 0.3);
+    border: 1.5px dashed rgba(212, 115, 26, 0.35);
     border-radius: 10px;
     cursor: pointer;
     user-select: none;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .partner-checkbox-row.active {
+    background: rgba(212, 115, 26, 0.13);
+    border-color: rgba(212, 115, 26, 0.65);
+  }
+
+  /* Nová tlačítka Jdu/Nejdu */
+  .training-actions { display: flex; gap: 10px; margin-top: 8px; }
+  .btn-choice {
+    flex: 1;
+    padding: 12px 8px;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.15s ease;
+  }
+  .btn-choice-nejdu {
+    background: #f0f0f0;
+    color: #888;
+    border-color: #ddd;
+  }
+  .btn-choice-nejdu:active {
+    background: var(--semafor-red);
+    color: white;
+    border-color: var(--semafor-red);
+  }
+  .btn-choice-jdu {
+    background: #f0f0f0;
+    color: #888;
+    border-color: #ddd;
+  }
+  .btn-choice-jdu:active {
+    background: var(--semafor-green);
+    color: white;
+    border-color: var(--semafor-green);
   }
   .partner-checkbox-row input[type="checkbox"] {
     width: 18px;
@@ -1441,33 +1482,35 @@ function renderTrainingCard(t, userId) {
     }
   } else if (registered) {
     const seeking = (t.lookingForPartner || []).includes(userId);
-    // Osobní čas příchodu - uložen v t.arrivalTimes jako { memberId: "18:00" }
     const arrivalTimes = t.arrivalTimes || {};
     const myArrival = arrivalTimes[userId] || '18:00';
     actions = `
       <div class="registered-status">✓ Jsi přihlášen</div>
-      <label class="partner-checkbox-row" onclick="toggleSeekingPartner('${t.id}')">
-        <input type="checkbox" ${seeking ? 'checked' : ''} onclick="event.stopPropagation(); toggleSeekingPartner('${t.id}')">
-        <span class="partner-checkbox-label">🧗 Hledám parťáka do dvojice</span>
-      </label>
+      <div class="partner-checkbox-row ${seeking ? 'active' : ''}" onclick="toggleSeekingPartner('${t.id}')">
+        <input type="checkbox" ${seeking ? 'checked' : ''} onclick="event.stopPropagation(); event.preventDefault();">
+        <div>
+          <div class="partner-checkbox-label">🧗 Hledám parťáka do dvojice</div>
+          <div style="font-size:11px; color: var(--ink-soft); margin-top: 2px;">${seeking ? 'Kliknutím zruš' : 'Kliknutím aktivuješ'}</div>
+        </div>
+      </div>
       <div style="display: flex; align-items: center; gap: 8px; margin-top: 8px; background: rgba(15,32,39,0.04); border: 1.5px solid var(--line); border-radius: 10px; padding: 8px 12px;">
         <span style="font-size: 13px; color: var(--ink-soft); flex: 1;">🕐 Přijdu v:</span>
         <button onclick="adjustArrival('${t.id}', -30)" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--paper); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">−</button>
         <span id="arrival-${t.id}" style="font-size: 16px; font-weight: 700; min-width: 46px; text-align: center;">${myArrival}</span>
         <button onclick="adjustArrival('${t.id}', +30)" style="width: 32px; height: 32px; border-radius: 50%; border: 1.5px solid var(--line); background: var(--paper); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">+</button>
       </div>
-      <button class="btn btn-decline" style="width: 100%; margin-top: 8px;" onclick="resetTrainingChoice('${t.id}')">Změnit</button>
+      <button class="btn-choice" style="width: 100%; margin-top: 8px;" onclick="resetTrainingChoice('${t.id}')">Změnit</button>
     `;
   } else if (declined) {
     actions = `
       <div class="declined-status-box">✕ Nejdeš na tento trénink</div>
-      <button class="btn btn-go" style="width: 100%; margin-top: 8px;" onclick="goTraining('${t.id}')">Změnit – Jdu</button>
+      <button class="btn-choice" style="width: 100%; margin-top: 8px;" onclick="goTraining('${t.id}')">Změnit</button>
     `;
   } else {
     actions = `
       <div class="training-actions">
-        <button class="btn btn-decline" onclick="declineTraining('${t.id}')">Nejdu</button>
-        <button class="btn btn-go" onclick="goTraining('${t.id}')">✓ Jdu</button>
+        <button class="btn-choice btn-choice-nejdu" onclick="declineTraining('${t.id}')">✕ Nejdu</button>
+        <button class="btn-choice btn-choice-jdu" onclick="goTraining('${t.id}')">✓ Jdu</button>
       </div>
     `;
   }
@@ -2355,6 +2398,22 @@ async function performSettlement(trainingId) {
   if (!t) {
     showToast('Chyba: trénink nenalezen');
     return;
+  }
+
+  // OCHRANA: zkontroluj zda trénink už není zúčtovaný (dvojité kliknutí / výpadek)
+  if (t.status === 'settled') {
+    showToast('Tento trénink už byl zúčtován');
+    closeModal();
+    render();
+    return;
+  }
+
+  // OCHRANA: zkontroluj v databázi jestli tam nejsou už transakce pro tento trénink
+  const existingTx = state.transactions.filter(tx => tx.trainingId === trainingId);
+  if (existingTx.length > 0) {
+    if (!confirm(`Upozornění: Pro tento trénink už existuje ${existingTx.length} transakcí. Zúčtovat znovu by mohlo způsobit duplicity. Pokračovat?`)) {
+      return;
+    }
   }
 
   const attendedIds = t._settlementAttendees || [];
