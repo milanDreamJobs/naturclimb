@@ -102,6 +102,31 @@ h3{margin:8px 0 2px;font:700 21px "Barlow Semi Condensed",system-ui}
 .leaflet-control-attribution{font-size:10px}
 :focus-visible{outline:2px solid var(--green);outline-offset:2px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+/* --- UX doplňky --- */
+.topbar{flex-wrap:wrap;row-gap:8px}
+.pill{font:600 13px system-ui;background:#fff;border:none;border-radius:999px;padding:8px 13px;
+  box-shadow:0 2px 10px rgba(0,0,0,.12);cursor:pointer;pointer-events:auto;color:var(--ink)}
+.actions{flex-wrap:wrap}
+.fab.locate{bottom:calc(90px + env(safe-area-inset-bottom));width:50px;height:50px;font-size:22px;
+  background:#fff;color:var(--ink);box-shadow:0 6px 16px rgba(0,0,0,.2)}
+.toast{position:fixed;left:50%;transform:translate(-50%,18px);bottom:calc(96px + env(safe-area-inset-bottom));
+  z-index:1600;background:var(--ink);color:#fff;padding:11px 16px;border-radius:999px;font:600 14px system-ui;
+  box-shadow:0 8px 22px rgba(0,0,0,.3);opacity:0;visibility:hidden;transition:.22s;max-width:88vw;text-align:center}
+.toast.show{opacity:1;visibility:visible;transform:translate(-50%,0)}
+.empty{position:fixed;inset:0;z-index:450;display:none;align-items:center;justify-content:center;pointer-events:none;padding:0 24px}
+.empty .card{background:#fff;border-radius:14px;padding:16px 20px;box-shadow:0 8px 24px rgba(0,0,0,.16);
+  text-align:center;font:700 16px "Barlow Semi Condensed",system-ui;color:var(--ink);max-width:300px}
+.empty .card small{display:block;font:500 13px system-ui;color:var(--muted);margin-top:5px}
+.lhead{font:700 12px system-ui;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 4px}
+.lrow{display:flex;align-items:center;gap:10px;width:100%;background:#fff;border:none;border-bottom:1px solid var(--line);
+  padding:11px 2px;cursor:pointer;text-align:left;color:var(--ink)}
+.lrow .dot{width:11px;height:11px;border-radius:50%;flex:0 0 auto}
+.lrow .ltext{flex:1;display:flex;flex-direction:column}
+.lrow .ltext b{font:600 15px system-ui}
+.lrow .ltext small{color:var(--muted);font:500 12px system-ui;margin-top:2px}
+.lrow .chev{color:#c0c8cd;font-size:20px}
+.gpstip{background:#eef3f7;color:#4a5b68;border-radius:10px;padding:9px 12px;font:500 13px system-ui;margin:4px 0 2px}
 </style>
 </head>
 <body>
@@ -110,6 +135,7 @@ h3{margin:8px 0 2px;font:700 21px "Barlow Semi Condensed",system-ui}
 
 <div class="topbar">
   <div class="brand">NaturClimb · Mapa</div>
+  <button class="pill" id="browseBtn">🔍 Hledat</button>
   <div class="chips">
     <button class="chip" id="chipV" aria-pressed="true"><span class="dot" style="background:var(--green)"></span>Byl jsem tu</button>
     <button class="chip" id="chipW" aria-pressed="true"><span class="dot" style="background:var(--orange)"></span>Chci sem</button>
@@ -122,7 +148,13 @@ h3{margin:8px 0 2px;font:700 21px "Barlow Semi Condensed",system-ui}
   <button class="cancel" id="hintCancel" aria-label="Zrušit">×</button>
 </div>
 
+<button class="fab locate" id="locBtn" aria-label="Moje poloha">🧭</button>
 <button class="fab" id="fab" aria-label="Přidat">+</button>
+
+<div class="toast" id="toast"></div>
+<div class="empty" id="empty">
+  <div class="card">Zatím tu nic není 🗺️<small>Přidej, kde jsi byl — ťukni na + vpravo dole</small></div>
+</div>
 
 <div class="scrim" id="scrim"></div>
 <div class="sheet" id="sheet" role="dialog" aria-modal="true">
@@ -196,17 +228,23 @@ function pinIcon(color){
 const ICON_V = pinIcon(getComputedStyle(document.documentElement).getPropertyValue('--green').trim()||'#27ae60');
 const ICON_W = pinIcon(getComputedStyle(document.documentElement).getPropertyValue('--orange').trim()||'#e67e22');
 
+let POINTS=[], MARKERS={}, ICOUNT={};
 async function loadPoints(){
   const { data, error } = await db.from('map_points').select('*').order('created_at',{ascending:false});
-  visitedLayer.clearLayers(); wishlistLayer.clearLayers();
+  visitedLayer.clearLayers(); wishlistLayer.clearLayers(); MARKERS={};
   if(error){ console.error(error); return; }
+  POINTS = data||[];
+  try{ const ir = await db.from('map_point_interest').select('point_id'); ICOUNT={};
+       (ir.data||[]).forEach(r=>ICOUNT[r.point_id]=(ICOUNT[r.point_id]||0)+1); }catch(_){}
   const bounds = [];
-  (data||[]).forEach(p=>{
+  POINTS.forEach(p=>{
     const m = L.marker([p.lat,p.lng],{icon: p.type==='visited'?ICON_V:ICON_W});
     m.on('click',()=>openDetail(p));
+    MARKERS[p.id]=m;
     (p.type==='visited'?visitedLayer:wishlistLayer).addLayer(m);
     bounds.push([p.lat,p.lng]);
   });
+  $('empty').style.display = POINTS.length ? 'none' : 'flex';
   if(bounds.length && !window._fitted){ map.fitBounds(bounds,{padding:[60,60],maxZoom:13}); window._fitted=true; }
 }
 
@@ -334,8 +372,10 @@ function renderReview(){
     </div>`;
   }).join('');
   const ready = reviewPlaces.filter(p=>p.lat!=null).length;
+  const needTip = reviewPlaces.some(p=>p.needsLocation && p.lat==null);
   $('sheetBody').innerHTML = `<h3>Zkontroluj a ulož</h3>
-    <p class="sub">Našel jsem ${reviewPlaces.length} ${reviewPlaces.length===1?'místo':'míst(a)'} – jména můžeš upravit.</p>${rows}`;
+    <p class="sub">Našel jsem ${reviewPlaces.length} ${reviewPlaces.length===1?'místo':'míst(a)'} – jména můžeš upravit.</p>
+    ${needTip?`<div class="gpstip">💡 Některé fotky nemají GPS. Tip: zapni si u focení polohu, příště se piny umístí samy.</div>`:''}${rows}`;
   $('sheetActions').innerHTML =
     `<button class="btn ghost" id="rvCancel">Zrušit</button>
      <button class="btn primary" id="rvSave" ${ready?'':'disabled'}>Uložit vše (${ready})</button>`;
@@ -362,7 +402,7 @@ async function saveReview(){
       if(ins.error) throw ins.error;
       for(const f of p.photos){ await uploadPhoto(ins.data.id, f, p.date); done++; busy(true,`Ukládám… ${done}/${total}`); }
     }
-    reviewPlaces=null; busy(false); await loadPoints();
+    reviewPlaces=null; busy(false); await loadPoints(); toast('Přidáno na mapu ✅');
   }catch(e){ busy(false); alert('Uložení selhalo: '+(e.message||e)); }
 }
 
@@ -406,7 +446,7 @@ async function openWishlistForm(lat,lng){
       note: ($('wNote').value||'').trim()||null, target_date: $('wDate').value||null, member_email:MEMBER });
     busy(false);
     if(ins.error){ alert('Uložení selhalo: '+ins.error.message); return; }
-    closeSheet(); await loadPoints();
+    closeSheet(); await loadPoints(); toast('Přidáno ✅');
   };
   const nm = await geocode(lat,lng); if($('wName')&&!$('wName').value) $('wName').value=nm;
 }
@@ -459,13 +499,16 @@ async function renderWishlist(p){
     <div class="row" style="margin-top:10px"><b>Kdo jede (${list.length})</b></div>${who}`;
   $('sheetActions').innerHTML =
     `${canEdit(p)?`<button class="btn danger" id="del">Smazat</button>`:''}
+     <button class="btn ghost" id="share">Sdílet</button>
      <button class="btn primary" id="join">${mine?'Nejedu':'Jedu taky'}</button>`;
   if($('del')) $('del').onclick=()=>deletePoint(p,null);
+  $('share').onclick=()=>shareWhatsApp(p);
   $('join').onclick=async()=>{
     busy(true,'Ukládám…');
     if(mine) await db.from('map_point_interest').delete().eq('point_id',p.id).eq('member_email',MEMBER);
     else await db.from('map_point_interest').insert({point_id:p.id, member_email:MEMBER});
-    busy(false); renderWishlist(p);
+    ICOUNT[p.id]=Math.max(0,(ICOUNT[p.id]||0)+(mine?-1:1));
+    busy(false); toast(mine?'Odhlášeno':'Jedeš! 🎒'); renderWishlist(p);
   };
 }
 
@@ -480,7 +523,7 @@ $('fileAdd').onchange=async e=>{
     }
     busy(false);
     const {data:p}=await db.from('map_points').select('*').eq('id',window._addTarget).single();
-    if(p) renderVisited(p);
+    toast('Fotka přidána ✅'); if(p) renderVisited(p);
   }catch(err){ busy(false); alert('Přidání selhalo: '+(err.message||err)); }
 };
 
@@ -495,7 +538,7 @@ async function deletePoint(p,photos){
     const del = await db.from('map_points').delete().eq('id',p.id); // FK cascade smaže fotky+zájem
     busy(false);
     if(del.error){ alert('Mazání selhalo: '+del.error.message); return; }
-    closeSheet(); await loadPoints();
+    closeSheet(); await loadPoints(); toast('Smazáno');
   }catch(e){ busy(false); alert('Mazání selhalo: '+(e.message||e)); }
 }
 
@@ -506,8 +549,77 @@ $('lbPrev').onclick=()=>{ lbIndex=(lbIndex-1+lbPhotos.length)%lbPhotos.length; $
 $('lbNext').onclick=()=>{ lbIndex=(lbIndex+1)%lbPhotos.length; $('lbImg').src=lbPhotos[lbIndex]; };
 $('lb').addEventListener('click',e=>{ if(e.target===$('lb')) $('lb').classList.remove('open'); });
 
-/* ---------- START ---------- */
-loadPoints();
+/* ---------- HLÁŠKY ---------- */
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200); }
+
+/* ---------- HLEDÁNÍ & SEZNAM ---------- */
+$('browseBtn').onclick = openBrowse;
+function openBrowse(){
+  $('sheetBody').innerHTML = `<h3>Hledat &amp; seznam</h3>
+    <div class="field" style="margin-top:6px"><input id="bSearch" placeholder="Hledat podle názvu…" autocomplete="off"></div>
+    <div id="bList"></div>`;
+  $('sheetActions').innerHTML = `<button class="btn ghost" id="bClose" style="flex:1">Zavřít</button>`;
+  $('bClose').onclick=closeSheet;
+  $('bSearch').oninput=()=>renderBrowse($('bSearch').value);
+  renderBrowse(''); openSheet();
+  setTimeout(()=>{ const s=$('bSearch'); if(s) s.focus(); },220);
+}
+function renderBrowse(q){
+  q=(q||'').trim().toLowerCase();
+  const match=p=>(p.area_name||'').toLowerCase().includes(q);
+  const wish=POINTS.filter(p=>p.type==='wishlist'&&match(p))
+    .sort((a,b)=>(ICOUNT[b.id]||0)-(ICOUNT[a.id]||0) || (a.target_date||'9999').localeCompare(b.target_date||'9999'));
+  const vis=POINTS.filter(p=>p.type==='visited'&&match(p))
+    .sort((a,b)=>(b.climb_date||'').localeCompare(a.climb_date||''));
+  const row=p=>{
+    const n=ICOUNT[p.id]||0;
+    const meta=p.type==='wishlist'
+      ? `${p.target_date?'🗓 '+p.target_date+' · ':''}🎒 ${n}`
+      : `${p.climb_date?'🗓 '+p.climb_date:''}`;
+    return `<button class="lrow" data-id="${p.id}"><span class="dot" style="background:${p.type==='visited'?'var(--green)':'var(--orange)'}"></span>`
+      +`<span class="ltext"><b>${esc(p.area_name)||'Bez názvu'}</b><small>${meta}</small></span><span class="chev">›</span></button>`;
+  };
+  const sec=(t,arr)=> arr.length?`<div class="lhead">${t}</div>${arr.map(row).join('')}`:'';
+  $('bList').innerHTML = (sec('Kam chce klub',wish)+sec('Kde jsme byli',vis)) || `<p class="sub">Nic nenalezeno.</p>`;
+  $('bList').querySelectorAll('.lrow').forEach(b=>b.onclick=()=>{ const p=POINTS.find(x=>x.id===b.dataset.id); closeSheet(); flyToPoint(p); });
+}
+function flyToPoint(p){
+  if(!p) return;
+  map.flyTo([p.lat,p.lng], Math.max(map.getZoom(),14), {duration:.6});
+  highlight(p);
+  setTimeout(()=>openDetail(p), 680);
+}
+let _hl=null;
+function highlight(p){
+  if(_hl) map.removeLayer(_hl);
+  _hl=L.circleMarker([p.lat,p.lng],{radius:26,color:'#1f2933',weight:3,opacity:.7,fill:false}).addTo(map);
+  setTimeout(()=>{ if(_hl){ map.removeLayer(_hl); _hl=null; } }, 2200);
+}
+
+/* ---------- SDÍLENÍ NA WHATSAPP ---------- */
+function shareWhatsApp(p){
+  const url = location.origin+location.pathname+'#p='+p.id;
+  const date = p.target_date ? ' '+p.target_date : '';
+  const txt = `Kdo se přidá? ${p.area_name||'Výlet'}${date}\n${url}`;
+  window.open('https://wa.me/?text='+encodeURIComponent(txt), '_blank');
+}
+
+/* ---------- MOJE POLOHA ---------- */
+$('locBtn').onclick=()=>{
+  if(!navigator.geolocation){ alert('Poloha není dostupná.'); return; }
+  busy(true,'Hledám tě…');
+  navigator.geolocation.getCurrentPosition(
+    pos=>{ busy(false); map.flyTo([pos.coords.latitude,pos.coords.longitude],14,{duration:.6}); },
+    ()=>{ busy(false); alert('Polohu se nepodařilo zjistit.'); },
+    {enableHighAccuracy:true,timeout:8000});
+};
+
+/* ---------- START + deep-link z WhatsAppu (#p=ID) ---------- */
+(async function start(){
+  await loadPoints();
+  const m = location.hash.match(/p=([0-9a-f-]+)/i);
+  if(m){ const p=POINTS.find(x=>x.id===m[1]); if(p) flyToPoint(p); }
+})();
 </script>
 </body>
 </html>
