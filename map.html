@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<title>NaturClimb · Mapa</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@600;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+  --green:#27ae60; --green-d:#1f8b4c; --orange:#e67e22;
+  --ink:#1f2933; --muted:#6b7785; --line:#e4e8eb;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);overscroll-behavior:none}
+#map{position:fixed;inset:0;z-index:0}
+
+.topbar{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;gap:8px;align-items:center;
+  padding:calc(10px + env(safe-area-inset-top)) 12px 0;pointer-events:none}
+.brand{font-family:"Barlow Semi Condensed",system-ui;font-weight:700;font-size:19px;letter-spacing:.3px;
+  background:#fff;padding:7px 13px;border-radius:999px;box-shadow:0 2px 12px rgba(0,0,0,.14);pointer-events:auto}
+.chips{display:flex;gap:6px;margin-left:auto;pointer-events:auto}
+.chip{font:600 13px system-ui;background:#fff;border:1px solid var(--line);border-radius:999px;
+  padding:7px 11px;display:flex;align-items:center;gap:7px;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.1)}
+.chip[aria-pressed="false"]{opacity:.4}
+.chip .dot{width:10px;height:10px;border-radius:50%}
+
+.fab{position:fixed;right:16px;bottom:calc(18px + env(safe-area-inset-bottom));z-index:500;
+  width:62px;height:62px;border-radius:50%;background:var(--green);color:#fff;border:none;
+  font-size:34px;line-height:1;box-shadow:0 8px 20px rgba(39,174,96,.5);cursor:pointer}
+
+.hint{position:fixed;left:12px;right:12px;top:calc(58px + env(safe-area-inset-top));z-index:600;
+  background:var(--ink);color:#fff;border-radius:12px;padding:12px 14px;font:600 14px system-ui;
+  display:none;align-items:center;gap:10px;box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.hint.open{display:flex}
+.hint .loc{background:#fff;color:var(--ink);border:none;border-radius:9px;padding:8px 11px;font:600 13px system-ui}
+.hint .cancel{background:none;border:none;color:#cfd6db;font-size:22px;line-height:1;padding:2px 4px;margin-left:2px}
+
+.scrim{position:fixed;inset:0;background:rgba(15,23,32,.45);z-index:900;opacity:0;visibility:hidden;transition:.2s}
+.scrim.open{opacity:1;visibility:visible}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:1000;background:#fff;border-radius:18px 18px 0 0;
+  box-shadow:0 -10px 34px rgba(0,0,0,.2);transform:translateY(100%);transition:transform .25s;max-height:90vh;display:flex;flex-direction:column}
+.sheet.open{transform:translateY(0)}
+.grab{width:40px;height:4px;background:#d4dade;border-radius:2px;margin:10px auto 2px}
+.body{overflow:auto;padding:6px 18px 16px;-webkit-overflow-scrolling:touch}
+.actions{padding:12px 18px calc(14px + env(safe-area-inset-bottom));border-top:1px solid var(--line);display:flex;gap:10px}
+
+h3{margin:8px 0 2px;font:700 21px "Barlow Semi Condensed",system-ui}
+.sub{color:var(--muted);font:500 13px system-ui;margin:0 0 8px}
+
+.btn{appearance:none;border:none;border-radius:12px;padding:14px 16px;font:600 16px system-ui;cursor:pointer;color:var(--ink)}
+.btn.primary{background:var(--green);color:#fff;flex:1}
+.btn.ghost{background:#f1f4f5}
+.btn.danger{background:#fdecea;color:#c0392b}
+.btn[disabled]{opacity:.5;cursor:default}
+.choice{display:flex;gap:10px}
+.choice .big{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;padding:22px 10px;
+  background:#f7f9fa;border:1px solid var(--line);border-radius:14px;cursor:pointer;font:600 15px system-ui}
+.choice .big .em{font-size:30px}
+.choice .v{border-color:#bfe6cd}.choice .w{border-color:#f3d8bd}
+
+.field{margin:11px 0}
+.field label{display:block;font:600 13px system-ui;color:var(--muted);margin-bottom:5px}
+.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:11px 12px;
+  font:400 16px system-ui;color:var(--ink);background:#fff}
+.field textarea{min-height:62px;resize:vertical}
+
+.place{border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
+.place.warn{border-color:#f3c98b;background:#fff9f0}
+.place .pmeta{font:500 13px system-ui;color:var(--muted);margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.place .locbtn{background:#fff3e3;color:#b9690f;border:none;border-radius:8px;padding:7px 10px;font:600 13px system-ui}
+
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:10px}
+.grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:9px;background:#eef1f2;cursor:pointer}
+.addphoto{display:flex;align-items:center;justify-content:center;aspect-ratio:1;border:1.5px dashed #c4ccd1;
+  border-radius:9px;color:var(--muted);font:600 26px system-ui;cursor:pointer;background:#fafbfc}
+
+.who{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.who span{background:#eef6f0;color:var(--green-d);border-radius:999px;padding:5px 11px;font:600 13px system-ui}
+.row{display:flex;align-items:center;gap:8px;font:500 14px system-ui;color:var(--ink);margin:6px 0}
+.tag{font:600 12px system-ui;padding:4px 9px;border-radius:999px}
+.tag.v{background:#e7f6ee;color:var(--green-d)}.tag.w{background:#fdf0e3;color:#b9690f}
+
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.93);z-index:1500;display:none;align-items:center;justify-content:center}
+.lb.open{display:flex}
+.lb img{max-width:100%;max-height:100%;object-fit:contain}
+.lb .nav{position:absolute;top:0;bottom:0;width:34%;background:none;border:none}
+.lb .prev{left:0}.lb .next{right:0}
+.lb .x{position:absolute;top:calc(8px + env(safe-area-inset-top));right:14px;color:#fff;font-size:32px;background:none;border:none}
+
+.busy{position:fixed;inset:0;background:rgba(255,255,255,.88);z-index:1400;display:none;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+.busy.open{display:flex}
+.busy .t{font:600 15px system-ui;color:var(--ink)}
+.spin{width:34px;height:34px;border:3px solid #d7e4dc;border-top-color:var(--green);border-radius:50%;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.pin{background:none;border:none}
+.leaflet-control-attribution{font-size:10px}
+:focus-visible{outline:2px solid var(--green);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="topbar">
+  <div class="brand">NaturClimb · Mapa</div>
+  <div class="chips">
+    <button class="chip" id="chipV" aria-pressed="true"><span class="dot" style="background:var(--green)"></span>Byl jsem tu</button>
+    <button class="chip" id="chipW" aria-pressed="true"><span class="dot" style="background:var(--orange)"></span>Chci sem</button>
+  </div>
+</div>
+
+<div class="hint" id="hint">
+  <span id="hintText">Ťukni na mapu, kam chceš jet</span>
+  <button class="loc" id="hintLoc">Moje poloha</button>
+  <button class="cancel" id="hintCancel" aria-label="Zrušit">×</button>
+</div>
+
+<button class="fab" id="fab" aria-label="Přidat">+</button>
+
+<div class="scrim" id="scrim"></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true">
+  <div class="grab"></div>
+  <div class="body" id="sheetBody"></div>
+  <div class="actions" id="sheetActions"></div>
+</div>
+
+<div class="lb" id="lb">
+  <button class="x" id="lbClose" aria-label="Zavřít">×</button>
+  <button class="nav prev" id="lbPrev" aria-label="Předchozí"></button>
+  <img id="lbImg" alt="">
+  <button class="nav next" id="lbNext" aria-label="Další"></button>
+</div>
+
+<div class="busy" id="busy"><div class="spin"></div><div class="t" id="busyText">Pracuji…</div></div>
+
+<input type="file" id="fileVisited" accept="image/*" multiple hidden>
+<input type="file" id="fileAdd" accept="image/*" multiple hidden>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/browser-image-compression@2.0.2/dist/browser-image-compression.js"></script>
+
+<script>
+/* ============================================================
+   KONFIGURACE – vyplň 4 hodnoty (stejné jako ve tvé appce)
+   ============================================================ */
+const SUPABASE_URL      = 'https://opyhlmtgyuuatevwyfpl.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_KYRaGl-FYPmBPB185Y3Plw_YpemIWOn';
+const CLUB_TOKEN        = 'naturclimb_2024_tajny_klub';      // ten samý x-club-token jako jinde
+const EMAIL_STORAGE_KEY = 'email';                   // klíč, pod kterým appka ukládá přihlášený e-mail
+const ADMIN_EMAILS      = ['13@mahy.cz'];      // kdo smí mazat cokoliv
+/* ============================================================ */
+
+// Klient se MUSÍ jmenovat db (ne supabase – kolize s CDN), s klubovým tokenem v hlavičkách
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  global: { headers: { 'x-club-token': CLUB_TOKEN } },
+  auth: { persistSession: false }
+});
+
+let MEMBER = (localStorage.getItem(EMAIL_STORAGE_KEY) || '').trim().toLowerCase();
+if(!MEMBER){ MEMBER = (prompt('Tvůj e-mail (pro testování mapy):') || '').trim().toLowerCase(); }
+
+const $ = id => document.getElementById(id);
+const localpart = e => (e||'').split('@')[0];
+const today = () => new Date().toISOString().slice(0,10);
+const dstr  = d => d ? new Date(d).toISOString().slice(0,10) : '';
+const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const canEdit = p => MEMBER === p.member_email || ADMIN_EMAILS.includes(MEMBER);
+const esc = s => (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function busy(on,t){ $('busyText').textContent = t||'Pracuji…'; $('busy').classList.toggle('open',on); }
+
+/* ---------- MAPA ---------- */
+const map = L.map('map',{zoomControl:false}).setView([49.8,15.5],7);
+L.control.zoom({position:'bottomleft'}).addTo(map);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  {maxZoom:19, attribution:'&copy; OpenStreetMap'}).addTo(map);
+
+const visitedLayer = L.layerGroup().addTo(map);
+const wishlistLayer = L.layerGroup().addTo(map);
+
+function pinIcon(color){
+  return L.divIcon({className:'pin',iconSize:[28,38],iconAnchor:[14,38],popupAnchor:[0,-34],
+    html:`<svg width="28" height="38" viewBox="0 0 28 38" xmlns="http://www.w3.org/2000/svg">
+      <path d="M14 0C6.3 0 0 6.3 0 14c0 9.5 12.2 22.7 13.1 23.6.5.5 1.3.5 1.8 0C15.8 36.7 28 23.5 28 14 28 6.3 21.7 0 14 0z" fill="${color}"/>
+      <circle cx="14" cy="14" r="5" fill="#fff" opacity=".92"/></svg>`});
+}
+const ICON_V = pinIcon(getComputedStyle(document.documentElement).getPropertyValue('--green').trim()||'#27ae60');
+const ICON_W = pinIcon(getComputedStyle(document.documentElement).getPropertyValue('--orange').trim()||'#e67e22');
+
+async function loadPoints(){
+  const { data, error } = await db.from('map_points').select('*').order('created_at',{ascending:false});
+  visitedLayer.clearLayers(); wishlistLayer.clearLayers();
+  if(error){ console.error(error); return; }
+  const bounds = [];
+  (data||[]).forEach(p=>{
+    const m = L.marker([p.lat,p.lng],{icon: p.type==='visited'?ICON_V:ICON_W});
+    m.on('click',()=>openDetail(p));
+    (p.type==='visited'?visitedLayer:wishlistLayer).addLayer(m);
+    bounds.push([p.lat,p.lng]);
+  });
+  if(bounds.length && !window._fitted){ map.fitBounds(bounds,{padding:[60,60],maxZoom:13}); window._fitted=true; }
+}
+
+/* ---------- FILTRY ---------- */
+function bindChip(btn,layer){
+  btn.onclick=()=>{ const on=btn.getAttribute('aria-pressed')==='true'; btn.setAttribute('aria-pressed',String(!on));
+    if(on) map.removeLayer(layer); else map.addLayer(layer); };
+}
+bindChip($('chipV'),visitedLayer); bindChip($('chipW'),wishlistLayer);
+
+/* ---------- SHEET ---------- */
+function openSheet(){ $('scrim').classList.add('open'); $('sheet').classList.add('open'); }
+function closeSheet(){ $('scrim').classList.remove('open'); $('sheet').classList.remove('open'); }
+$('scrim').onclick = closeSheet;
+
+/* ---------- + AKCE ---------- */
+$('fab').onclick = ()=>{
+  $('sheetBody').innerHTML = `<h3>Přidat na mapu</h3><p class="sub">Co chceš přidat?</p>
+    <div class="choice">
+      <button class="big v" id="cV"><span class="em">📷</span>Byl jsem tu</button>
+      <button class="big w" id="cW"><span class="em">📍</span>Chci sem jet</button>
+    </div>`;
+  $('sheetActions').innerHTML = '';
+  $('cV').onclick = ()=>{ closeSheet(); $('fileVisited').value=''; $('fileVisited').click(); };
+  $('cW').onclick = ()=>{ closeSheet(); startWishlistPlacement(); };
+  openSheet();
+};
+
+/* ---------- POMOCNÉ: vzdálenost, geokódování, fotky ---------- */
+function distM(a,b){ const R=6371000,r=x=>x*Math.PI/180;
+  const dLat=r(b.lat-a.lat),dLng=r(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2+Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s)); }
+
+let lastGeo=0; const geoCache={};
+async function geocode(lat,lng){
+  const key=lat.toFixed(4)+','+lng.toFixed(4);
+  if(geoCache[key]!==undefined) return geoCache[key];
+  const wait=Math.max(0,1100-(Date.now()-lastGeo)); if(wait) await sleep(wait); lastGeo=Date.now();
+  try{
+    const r=await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=12&accept-language=cs&lat=${lat}&lon=${lng}`);
+    const j=await r.json(); const a=j.address||{};
+    const name=j.name||a.village||a.hamlet||a.town||a.city||a.municipality||a.county||(j.display_name||'').split(',')[0]||'';
+    geoCache[key]=name; return name;
+  }catch(e){ geoCache[key]=''; return ''; }
+}
+
+// vrátí {full, thumb} jako JPEG; knihovna sama správně otočí dle EXIF
+async function makeVersions(file){
+  const base={useWebWorker:false, fileType:'image/jpeg'};
+  const full  = await imageCompression(file, {...base, maxWidthOrHeight:1600, maxSizeMB:0.6});
+  const thumb = await imageCompression(file, {...base, maxWidthOrHeight:400,  maxSizeMB:0.1});
+  return {full, thumb};
+}
+
+async function uploadPhoto(pointId, file, takenAt){
+  const {full, thumb} = await makeVersions(file);
+  const id = crypto.randomUUID();
+  const fullPath = `${pointId}/${id}.jpg`;
+  const thumbPath = `${pointId}/${id}_thumb.jpg`;
+  let up = await db.storage.from('map-photos').upload(fullPath, full, {contentType:'image/jpeg'});
+  if(up.error) throw up.error;
+  up = await db.storage.from('map-photos').upload(thumbPath, thumb, {contentType:'image/jpeg'});
+  if(up.error) throw up.error;
+  const ins = await db.from('map_point_photos').insert({
+    point_id:pointId, storage_path:fullPath, thumb_path:thumbPath,
+    uploaded_by:MEMBER, taken_at: takenAt? new Date(takenAt).toISOString(): null });
+  if(ins.error) throw ins.error;
+}
+
+async function signedUrls(paths){
+  const out={}; if(!paths.length) return out;
+  const {data} = await db.storage.from('map-photos').createSignedUrls(paths,3600);
+  (data||[]).forEach(d=>{ if(d.signedUrl) out[d.path]=d.signedUrl; });
+  return out;
+}
+
+/* ---------- BYL JSEM TU: foto-first + dávkový import ---------- */
+let reviewPlaces = null;          // pole míst během kontroly
+let pendingNoGps = null;          // místo čekající na ruční umístění
+
+$('fileVisited').onchange = e => handleVisitedFiles([...e.target.files]);
+
+async function handleVisitedFiles(files){
+  if(!files.length) return;
+  busy(true,'Čtu fotky…');
+  const withGps=[], noGps=[];
+  for(const f of files){
+    let lat=null,lng=null,date=null;
+    try{ const g=await exifr.gps(f); if(g){ lat=g.latitude; lng=g.longitude; } }catch(_){}
+    try{ const m=await exifr.parse(f,['DateTimeOriginal']); if(m&&m.DateTimeOriginal) date=m.DateTimeOriginal; }catch(_){}
+    (lat!=null&&lng!=null) ? withGps.push({file:f,lat,lng,date}) : noGps.push({file:f,date});
+  }
+  // seskupení dle blízkosti (~300 m)
+  const clusters=[];
+  withGps.forEach(p=>{
+    let c=clusters.find(c=>distM({lat:c.lat,lng:c.lng},p)<=300);
+    if(c){ c.lat=(c.lat*c.n+p.lat)/(c.n+1); c.lng=(c.lng*c.n+p.lng)/(c.n+1); c.n++; c.photos.push(p.file);
+           if(p.date && (!c.date||p.date<c.date)) c.date=p.date; }
+    else clusters.push({lat:p.lat,lng:p.lng,n:1,photos:[p.file],date:p.date});
+  });
+  // názvy přes Nominatim
+  busy(true,'Hledám názvy míst…');
+  for(const c of clusters){ c.name = await geocode(c.lat,c.lng); }
+
+  reviewPlaces = clusters.map(c=>({lat:c.lat,lng:c.lng,name:c.name||'',date:c.date,photos:c.photos}));
+  if(noGps.length){
+    const d = noGps.map(x=>x.date).filter(Boolean).sort()[0] || null;
+    reviewPlaces.push({lat:null,lng:null,name:'',date:d,photos:noGps.map(x=>x.file),needsLocation:true});
+  }
+  busy(false);
+  renderReview();
+}
+
+function renderReview(){
+  const rows = reviewPlaces.map((p,i)=>{
+    const photos = p.photos.length+' '+(p.photos.length===1?'fotka':p.photos.length<5?'fotky':'fotek');
+    const loc = p.needsLocation && p.lat==null
+      ? `<button class="locbtn" data-i="${i}">📍 Určit místo na mapě</button>`
+      : `<span>📍 ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</span>`;
+    return `<div class="place ${p.needsLocation&&p.lat==null?'warn':''}">
+      <div class="field" style="margin:0"><label>Místo</label>
+        <input data-name="${i}" value="${esc(p.name)}" placeholder="Název oblasti"></div>
+      <div class="pmeta">${loc} · 🗓 ${p.date?dstr(p.date):today()} · 🖼 ${photos}</div>
+    </div>`;
+  }).join('');
+  const ready = reviewPlaces.filter(p=>p.lat!=null).length;
+  $('sheetBody').innerHTML = `<h3>Zkontroluj a ulož</h3>
+    <p class="sub">Našel jsem ${reviewPlaces.length} ${reviewPlaces.length===1?'místo':'míst(a)'} – jména můžeš upravit.</p>${rows}`;
+  $('sheetActions').innerHTML =
+    `<button class="btn ghost" id="rvCancel">Zrušit</button>
+     <button class="btn primary" id="rvSave" ${ready?'':'disabled'}>Uložit vše (${ready})</button>`;
+  reviewPlaces.forEach((p,i)=>{
+    const inp=$('sheetBody').querySelector(`[data-name="${i}"]`); if(inp) inp.oninput=e=>p.name=e.target.value;
+  });
+  $('sheetBody').querySelectorAll('.locbtn').forEach(b=>b.onclick=()=>{
+    pendingNoGps = reviewPlaces[+b.dataset.i]; closeSheet(); startNoGpsPlacement();
+  });
+  $('rvCancel').onclick=()=>{ reviewPlaces=null; closeSheet(); };
+  $('rvSave').onclick=saveReview;
+  openSheet();
+}
+
+async function saveReview(){
+  const places = reviewPlaces.filter(p=>p.lat!=null);
+  let done=0, total=places.reduce((s,p)=>s+p.photos.length,0);
+  busy(true,`Ukládám… 0/${total}`);
+  try{
+    for(const p of places){
+      const ins = await db.from('map_points').insert({
+        type:'visited', lat:p.lat, lng:p.lng, area_name:p.name||null,
+        climb_date: p.date?dstr(p.date):today(), member_email:MEMBER }).select().single();
+      if(ins.error) throw ins.error;
+      for(const f of p.photos){ await uploadPhoto(ins.data.id, f, p.date); done++; busy(true,`Ukládám… ${done}/${total}`); }
+    }
+    reviewPlaces=null; busy(false); await loadPoints();
+  }catch(e){ busy(false); alert('Uložení selhalo: '+(e.message||e)); }
+}
+
+/* ---------- UMÍSTĚNÍ PINŮ NA MAPĚ ---------- */
+let placeMode=null; // 'wishlist' | 'nogps'
+function showHint(text,withLoc){ $('hintText').textContent=text; $('hintLoc').style.display=withLoc?'':'none'; $('hint').classList.add('open'); }
+function hideHint(){ $('hint').classList.remove('open'); placeMode=null; pendingNoGps=null; }
+$('hintCancel').onclick=()=>{ if(placeMode==='nogps' && pendingNoGps){ const np=pendingNoGps; hideHint(); reviewPlaces=reviewPlaces||[]; renderReview(); } else hideHint(); };
+
+function startWishlistPlacement(){ placeMode='wishlist'; showHint('Ťukni na mapu, kam chceš jet',true); }
+function startNoGpsPlacement(){ placeMode='nogps'; showHint('Ťukni na mapu, kam ty fotky patří',true); }
+
+$('hintLoc').onclick=()=>{
+  if(!navigator.geolocation){ alert('Poloha není dostupná.'); return; }
+  busy(true,'Zjišťuji polohu…');
+  navigator.geolocation.getCurrentPosition(
+    p=>{ busy(false); usePlacement(p.coords.latitude,p.coords.longitude); },
+    ()=>{ busy(false); alert('Polohu se nepodařilo zjistit – ťukni do mapy.'); },
+    {enableHighAccuracy:true,timeout:8000});
+};
+map.on('click',e=>{ if(placeMode) usePlacement(e.latlng.lat,e.latlng.lng); });
+
+async function usePlacement(lat,lng){
+  if(placeMode==='wishlist'){ hideHint(); openWishlistForm(lat,lng); }
+  else if(placeMode==='nogps' && pendingNoGps){ pendingNoGps.lat=lat; pendingNoGps.lng=lng; pendingNoGps.needsLocation=false; hideHint(); renderReview(); }
+}
+
+/* ---------- CHCI SEM JET (wishlist) ---------- */
+async function openWishlistForm(lat,lng){
+  openSheet();
+  $('sheetBody').innerHTML = `<h3>Chci sem jet</h3><p class="sub">📍 ${lat.toFixed(4)}, ${lng.toFixed(4)}</p>
+    <div class="field"><label>Místo</label><input id="wName" placeholder="Hledám název…"></div>
+    <div class="field"><label>Kdy bych chtěl jet (nepovinné)</label><input id="wDate" type="date"></div>
+    <div class="field"><label>Poznámka (nepovinné)</label><textarea id="wNote" placeholder="Proč / co tam láká"></textarea></div>`;
+  $('sheetActions').innerHTML = `<button class="btn ghost" id="wCancel">Zrušit</button><button class="btn primary" id="wSave">Uložit</button>`;
+  $('wCancel').onclick=closeSheet;
+  $('wSave').onclick=async()=>{
+    busy(true,'Ukládám…');
+    const ins = await db.from('map_points').insert({
+      type:'wishlist', lat, lng, area_name: ($('wName').value||'').trim()||null,
+      note: ($('wNote').value||'').trim()||null, target_date: $('wDate').value||null, member_email:MEMBER });
+    busy(false);
+    if(ins.error){ alert('Uložení selhalo: '+ins.error.message); return; }
+    closeSheet(); await loadPoints();
+  };
+  const nm = await geocode(lat,lng); if($('wName')&&!$('wName').value) $('wName').value=nm;
+}
+
+/* ---------- DETAIL BODU ---------- */
+let lbPhotos=[], lbIndex=0;
+
+async function openDetail(p){
+  openSheet();
+  $('sheetBody').innerHTML = `<div class="spin" style="margin:20px auto"></div>`;
+  $('sheetActions').innerHTML = '';
+  if(p.type==='visited') await renderVisited(p); else await renderWishlist(p);
+}
+
+async function renderVisited(p){
+  const {data:photos} = await db.from('map_point_photos').select('*').eq('point_id',p.id).order('created_at');
+  const thumbs = (photos||[]).map(x=>x.thumb_path||x.storage_path);
+  const urls = await signedUrls([...thumbs]);
+  const full = await signedUrls((photos||[]).map(x=>x.storage_path));
+  lbPhotos = (photos||[]).map(x=>full[x.storage_path]).filter(Boolean);
+
+  const grid = (photos||[]).map((x,i)=>`<img src="${urls[x.thumb_path||x.storage_path]||''}" data-i="${i}" alt="">`).join('')
+             + `<div class="addphoto" id="addPhoto">+</div>`;
+  $('sheetBody').innerHTML = `
+    <span class="tag v">Byl jsem tu</span>
+    <h3>${esc(p.area_name)||'Bez názvu'}</h3>
+    <p class="sub">${p.climb_date?('🗓 '+p.climb_date+' · '):''}přidal ${esc(localpart(p.member_email))}</p>
+    ${p.note?`<div class="row">📝 ${esc(p.note)}</div>`:''}
+    <div class="grid" id="grid">${grid}</div>`;
+  $('sheetActions').innerHTML = canEdit(p)
+    ? `<button class="btn danger" id="del">Smazat</button><button class="btn ghost" id="close">Zavřít</button>`
+    : `<button class="btn ghost" id="close" style="flex:1">Zavřít</button>`;
+  $('close').onclick=closeSheet;
+  if($('del')) $('del').onclick=()=>deletePoint(p,photos);
+  $('grid').querySelectorAll('img').forEach(img=>img.onclick=()=>openLightbox(+img.dataset.i));
+  $('addPhoto').onclick=()=>{ window._addTarget=p.id; $('fileAdd').value=''; $('fileAdd').click(); };
+}
+
+async function renderWishlist(p){
+  const {data:interest} = await db.from('map_point_interest').select('*').eq('point_id',p.id);
+  const list = interest||[];
+  const mine = list.some(r=>r.member_email===MEMBER);
+  const who = list.length ? `<div class="who">${list.map(r=>`<span>${esc(localpart(r.member_email))}</span>`).join('')}</div>`
+                          : `<p class="sub">Zatím nikdo. Buď první!</p>`;
+  $('sheetBody').innerHTML = `
+    <span class="tag w">Chci sem jet</span>
+    <h3>${esc(p.area_name)||'Bez názvu'}</h3>
+    <p class="sub">${p.target_date?('🗓 '+p.target_date+' · '):''}navrhl ${esc(localpart(p.member_email))}</p>
+    ${p.note?`<div class="row">📝 ${esc(p.note)}</div>`:''}
+    <div class="row" style="margin-top:10px"><b>Kdo jede (${list.length})</b></div>${who}`;
+  $('sheetActions').innerHTML =
+    `${canEdit(p)?`<button class="btn danger" id="del">Smazat</button>`:''}
+     <button class="btn primary" id="join">${mine?'Nejedu':'Jedu taky'}</button>`;
+  if($('del')) $('del').onclick=()=>deletePoint(p,null);
+  $('join').onclick=async()=>{
+    busy(true,'Ukládám…');
+    if(mine) await db.from('map_point_interest').delete().eq('point_id',p.id).eq('member_email',MEMBER);
+    else await db.from('map_point_interest').insert({point_id:p.id, member_email:MEMBER});
+    busy(false); renderWishlist(p);
+  };
+}
+
+// přidání fotky k existujícímu bodu (smí kdokoliv)
+$('fileAdd').onchange=async e=>{
+  const files=[...e.target.files]; if(!files.length||!window._addTarget) return;
+  let done=0; busy(true,`Přidávám… 0/${files.length}`);
+  try{
+    for(const f of files){
+      let date=null; try{ const m=await exifr.parse(f,['DateTimeOriginal']); if(m) date=m.DateTimeOriginal; }catch(_){}
+      await uploadPhoto(window._addTarget, f, date); done++; busy(true,`Přidávám… ${done}/${files.length}`);
+    }
+    busy(false);
+    const {data:p}=await db.from('map_points').select('*').eq('id',window._addTarget).single();
+    if(p) renderVisited(p);
+  }catch(err){ busy(false); alert('Přidání selhalo: '+(err.message||err)); }
+};
+
+async function deletePoint(p,photos){
+  if(!confirm('Opravdu smazat tento bod i s fotkami?')) return;
+  busy(true,'Mažu…');
+  try{
+    let paths=[];
+    if(photos===null){ const {data}=await db.from('map_point_photos').select('*').eq('point_id',p.id); photos=data||[]; }
+    (photos||[]).forEach(x=>{ paths.push(x.storage_path); if(x.thumb_path) paths.push(x.thumb_path); });
+    if(paths.length) await db.storage.from('map-photos').remove(paths);
+    const del = await db.from('map_points').delete().eq('id',p.id); // FK cascade smaže fotky+zájem
+    busy(false);
+    if(del.error){ alert('Mazání selhalo: '+del.error.message); return; }
+    closeSheet(); await loadPoints();
+  }catch(e){ busy(false); alert('Mazání selhalo: '+(e.message||e)); }
+}
+
+/* ---------- LIGHTBOX ---------- */
+function openLightbox(i){ if(!lbPhotos.length) return; lbIndex=i; $('lbImg').src=lbPhotos[i]; $('lb').classList.add('open'); }
+$('lbClose').onclick=()=>$('lb').classList.remove('open');
+$('lbPrev').onclick=()=>{ lbIndex=(lbIndex-1+lbPhotos.length)%lbPhotos.length; $('lbImg').src=lbPhotos[lbIndex]; };
+$('lbNext').onclick=()=>{ lbIndex=(lbIndex+1)%lbPhotos.length; $('lbImg').src=lbPhotos[lbIndex]; };
+$('lb').addEventListener('click',e=>{ if(e.target===$('lb')) $('lb').classList.remove('open'); });
+
+/* ---------- START ---------- */
+loadPoints();
+</script>
+</body>
+</html>
