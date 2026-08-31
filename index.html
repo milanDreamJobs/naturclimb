@@ -706,6 +706,9 @@ const state = {
   members: [],
   trainings: [],
   transactions: [],
+  events: [],
+  eventRegistrations: [],
+  eventRides: [],
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
@@ -762,6 +765,7 @@ async function loadAllData() {
       email: m.email,
       phone: m.phone || '',
       isAdmin: m.is_admin,
+      isSaunaAdmin: m.is_sauna_admin || false,
       isActive: m.is_active !== false,
       balance: m.balance || 0,
       createdAt: m.created_at
@@ -821,6 +825,47 @@ async function loadAllData() {
     }));
 
     state.members.forEach(m => recalcBalance(m.id));
+
+    // Events
+    const { data: eventsData, error: evErr } = await db
+      .from('events').select('*').order('start_datetime');
+    if (evErr) console.error('❌ Events error:', evErr);
+    state.events = (eventsData || []).map(e => ({
+      id: e.id, name: e.name,
+      startDatetime: e.start_datetime, endDatetime: e.end_datetime,
+      venue: e.venue,
+      priceAccommodation: e.price_accommodation || 0,
+      beer1Name: e.beer1_name || '', beer1Price: e.beer1_price || 0,
+      beer2Name: e.beer2_name || '', beer2Price: e.beer2_price || 0,
+      status: e.status || 'open', createdAt: e.created_at
+    }));
+
+    // Event registrations
+    const { data: erData, error: erErr } = await db
+      .from('event_registrations').select('*');
+    if (erErr) console.error('❌ EventReg error:', erErr);
+    state.eventRegistrations = (erData || []).map(r => ({
+      id: r.id, eventId: r.event_id, memberId: r.member_id,
+      beer1Count: r.beer1_count || 0, beer2Count: r.beer2_count || 0,
+      nights: r.nights || null,
+      arrivalDatetime: r.arrival_datetime,
+      updatedAt: r.updated_at,
+      createdAt: r.created_at
+    }));
+
+    // Event rides
+    const { data: ridesData, error: riErr } = await db
+      .from('event_rides').select('*');
+    if (riErr) console.error('❌ EventRides error:', riErr);
+    state.eventRides = (ridesData || []).map(r => ({
+      id: r.id, eventId: r.event_id, driverId: r.driver_id,
+      direction: r.direction, seats: r.seats || 1,
+      departureDatetime: r.departure_datetime,
+      departurePlace: r.departure_place || '',
+      priceInfo: r.price_info || '', note: r.note || '',
+      reservations: r.reservations || [], createdAt: r.created_at
+    }));
+
     console.log('✅ All data loaded successfully');
   } catch (err) {
     console.error('❌ Failed to load data:', err);
@@ -859,6 +904,7 @@ async function saveMember(member) {
     email: member.email,
     phone: member.phone || '',
     is_admin: member.isAdmin || false,
+    is_sauna_admin: member.isSaunaAdmin || false,
     is_active: member.isActive !== false,
     balance: member.balance || 0
   });
@@ -919,7 +965,7 @@ async function deleteTrainingFromDb(trainingId) {
 }
 
 async function saveTransaction(tx) {
-  const { error } = await db.from('transactions').upsert({
+  const payload = {
     id: tx.id,
     member_id: tx.memberId,
     amount: tx.amount,
@@ -929,13 +975,65 @@ async function saveTransaction(tx) {
     balance_after: tx.balanceAfter,
     created_by: tx.createdBy || null,
     created_at: tx.createdAt
-  });
-  if (error) { console.error('saveTransaction:', error); showToast('Chyba ukládání pohybu'); }
+  };
+  console.log('💾 Saving transaction:', payload);
+  const { data, error } = await db.from('transactions').upsert(payload).select();
+  if (error) {
+    console.error('❌ saveTransaction error:', JSON.stringify(error));
+    showToast('Chyba ukládání transakce: ' + (error.message || error.code || 'neznámá chyba'));
+    return false;
+  }
+  console.log('✅ Transaction saved:', data);
+  return true;
 }
 
 async function deleteTransactionsByTraining(trainingId) {
   const { error } = await db.from('transactions').delete().eq('training_id', trainingId);
   if (error) console.error('deleteTransactionsByTraining:', error);
+}
+
+async function saveEvent(event) {
+  const { error } = await db.from('events').upsert({
+    id: event.id, name: event.name,
+    start_datetime: event.startDatetime, end_datetime: event.endDatetime,
+    venue: event.venue,
+    price_accommodation: event.priceAccommodation || 0,
+    beer1_name: event.beer1Name || '', beer1_price: event.beer1Price || 0,
+    beer2_name: event.beer2Name || '', beer2_price: event.beer2Price || 0,
+    status: event.status || 'open'
+  });
+  if (error) { console.error('saveEvent:', error); showToast('Chyba ukládání akce'); }
+}
+
+async function saveEventRegistration(reg) {
+  const { error } = await db.from('event_registrations').upsert({
+    id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
+    beer1_count: reg.beer1Count || 0, beer2_count: reg.beer2Count || 0,
+    arrival_datetime: reg.arrivalDatetime || null
+  });
+  if (error) { console.error('saveEventReg:', error); showToast('Chyba ukládání přihlášky'); }
+}
+
+async function deleteEventRegistration(regId) {
+  const { error } = await db.from('event_registrations').delete().eq('id', regId);
+  if (error) console.error('deleteEventReg:', error);
+}
+
+async function saveEventRide(ride) {
+  const { error } = await db.from('event_rides').upsert({
+    id: ride.id, event_id: ride.eventId, driver_id: ride.driverId,
+    direction: ride.direction, seats: ride.seats || 1,
+    departure_datetime: ride.departureDatetime || null,
+    departure_place: ride.departurePlace || '',
+    price_info: ride.priceInfo || '', note: ride.note || '',
+    reservations: ride.reservations || []
+  });
+  if (error) { console.error('saveEventRide:', error); showToast('Chyba ukládání odvozu'); }
+}
+
+async function deleteEventRide(rideId) {
+  const { error } = await db.from('event_rides').delete().eq('id', rideId);
+  if (error) console.error('deleteEventRide:', error);
 }
 
 // Legacy API for compatibility - dispatches to proper save functions
@@ -1021,12 +1119,46 @@ function isAdmin() {
   return u && u.isAdmin;
 }
 
+function isSaunaAdmin() {
+  const u = getCurrentUser();
+  return u && u.isSaunaAdmin;
+}
+
+function canAccessAdmin() {
+  const u = getCurrentUser();
+  return u && (u.isAdmin || u.isSaunaAdmin);
+}
+
 function getMember(id) {
   return state.members.find(m => m.id === id);
 }
 
 function getTraining(id) {
   return state.trainings.find(t => t.id === id);
+}
+
+function getEvent(id) {
+  return state.events.find(e => e.id === id);
+}
+
+function getMyEventReg(eventId) {
+  return state.eventRegistrations.find(r => r.eventId === eventId && r.memberId === state.currentUserId);
+}
+
+function getEventRides(eventId) {
+  return state.eventRides.filter(r => r.eventId === eventId);
+}
+
+function formatEventDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' });
+}
+
+function formatEventDateFull(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('cs-CZ', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
 }
 
 function isRegistered(trainingId, memberId) {
@@ -1075,12 +1207,18 @@ async function addTransaction(data) {
     createdAt: new Date().toISOString(),
     ...data
   };
-  state.transactions.unshift(tx);  // unshift = sorted desc by createdAt
+  state.transactions.unshift(tx);
   const newBalance = recalcBalance(data.memberId);
   tx.balanceAfter = newBalance;
 
   // Save tx and updated member balance to Supabase
-  await saveTransaction(tx);
+  const ok = await saveTransaction(tx);
+  if (!ok) {
+    // Rollback z lokálního state pokud uložení selhalo
+    state.transactions = state.transactions.filter(t => t.id !== tx.id);
+    recalcBalance(data.memberId);
+    return null;
+  }
   const member = getMember(data.memberId);
   if (member) await saveMember(member);
 
@@ -1159,6 +1297,9 @@ function render() {
   if (user.isAdmin && state.currentView === 'admin') {
     app.innerHTML = renderAdmin();
     updateFab();
+  } else if (user.isSaunaAdmin && state.currentView === 'admin') {
+    app.innerHTML = renderSaunaAdmin();
+    fab.classList.add('hidden');
   } else {
     app.innerHTML = renderMember();
     fab.classList.add('hidden');
@@ -1274,7 +1415,7 @@ function tryLoginByEmail() {
   // Nalezen → přihlásit
   setTimeout(() => {
     setCurrentUser(member.id);
-    state.currentView = member.isAdmin ? 'admin' : 'member';
+    state.currentView = (member.isAdmin || member.isSaunaAdmin) ? 'admin' : 'member';
     showToast(`Vítej, ${member.name}! 👋`);
     render();
   }, 1000);
@@ -1369,7 +1510,7 @@ function renderMember() {
 
   return `
     ${renderHeader()}
-    ${user.isAdmin ? renderModeSwitcher() : ''}
+    ${(user.isAdmin || user.isSaunaAdmin) ? renderModeSwitcher() : ''}
 
     <div class="account ${accountClass}">
       <div class="account-label">Moje konto</div>
@@ -1394,6 +1535,11 @@ function renderMember() {
         <div>Žádné tréninky nejsou naplánované.</div>
       </div>
     ` : upcoming.map(t => renderTrainingCard(t, user.id)).join('')}
+
+    ${state.events.length > 0 ? `
+      <div class="section-title" style="margin-top: 20px;">🏕️ Akce oddílu</div>
+      ${renderMemberEvents()}
+    ` : ''}
 
     <div style="margin-top: 24px;">
       <button class="btn btn-secondary" style="width: 100%;" onclick="showHistory()">
@@ -1528,6 +1674,607 @@ function renderTrainingCard(t, userId) {
       ${actions}
     </div>
   `;
+}
+
+// ============================================
+// AKCE – admin formulář
+// ============================================
+function openEventForm(editId) {
+  const editing = editId ? getEvent(editId) : null;
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">${editing ? 'Upravit akci' : '🏕️ Nová akce'}</div>
+    </div>
+    <div class="form-group">
+      <label>Název akce</label>
+      <input type="text" id="ev-name" placeholder="Jarní výjezd Adršpach" value="${editing ? editing.name : ''}">
+    </div>
+    <div class="form-group">
+      <label>Místo</label>
+      <input type="text" id="ev-venue" placeholder="Adršpach, chatka U Skalníka" value="${editing ? editing.venue : ''}">
+    </div>
+    <div class="form-group">
+      <label>Začátek akce</label>
+      <input type="datetime-local" id="ev-start" value="${editing ? editing.startDatetime.slice(0,16) : ''}">
+    </div>
+    <div class="form-group">
+      <label>Konec akce</label>
+      <input type="datetime-local" id="ev-end" value="${editing ? editing.endDatetime.slice(0,16) : ''}">
+    </div>
+    <div class="section-title" style="margin: 16px 0 8px;">Ubytování</div>
+    <div class="form-group">
+      <label>Cena ubytování za noc (Kč / z konta)</label>
+      <input type="number" id="ev-acc" placeholder="300" min="0" value="${editing ? editing.priceAccommodation : ''}">
+    </div>
+    <div class="section-title" style="margin: 16px 0 8px;">Piva</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+      <div class="form-group" style="margin:0;"><label>Název piva 1</label><input type="text" id="ev-b1name" placeholder="Kozel 10°" value="${editing ? editing.beer1Name : ''}"></div>
+      <div class="form-group" style="margin:0;"><label>Cena piva 1 (Kč)</label><input type="number" id="ev-b1price" placeholder="45" min="0" value="${editing ? editing.beer1Price : ''}"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <div class="form-group" style="margin:0;"><label>Název piva 2</label><input type="text" id="ev-b2name" placeholder="Bernard 12°" value="${editing ? editing.beer2Name : ''}"></div>
+      <div class="form-group" style="margin:0;"><label>Cena piva 2 (Kč)</label><input type="number" id="ev-b2price" placeholder="55" min="0" value="${editing ? editing.beer2Price : ''}"></div>
+    </div>
+    <div class="form-actions">
+      ${editing ? `<button class="btn btn-danger" onclick="deleteEvent('${editing.id}')">Smazat</button>` : ''}
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" onclick="saveEventForm('${editId || ''}')">${editing ? 'Uložit' : 'Vytvořit akci'}</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function saveEventForm(editId) {
+  const name = document.getElementById('ev-name').value.trim();
+  const venue = document.getElementById('ev-venue').value.trim();
+  const start = document.getElementById('ev-start').value;
+  const end = document.getElementById('ev-end').value;
+  const acc = parseInt(document.getElementById('ev-acc').value) || 0;
+  const b1name = document.getElementById('ev-b1name').value.trim();
+  const b1price = parseInt(document.getElementById('ev-b1price').value) || 0;
+  const b2name = document.getElementById('ev-b2name').value.trim();
+  const b2price = parseInt(document.getElementById('ev-b2price').value) || 0;
+  if (!name || !venue || !start || !end) { showToast('Vyplň název, místo, začátek a konec'); return; }
+  if (new Date(end) <= new Date(start)) { showToast('Konec musí být po začátku'); return; }
+  let event;
+  if (editId) {
+    event = getEvent(editId);
+    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price });
+  } else {
+    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price, status: 'open', createdAt: new Date().toISOString() };
+    state.events.push(event);
+  }
+  await saveEvent(event);
+  closeModal();
+  showToast(`✓ Akce "${name}" uložena`);
+  render();
+}
+
+async function deleteEvent(eventId) {
+  if (!confirm('Opravdu smazat akci? Smažou se i přihlášky a nabídky odvozu.')) return;
+  state.events = state.events.filter(e => e.id !== eventId);
+  state.eventRegistrations = state.eventRegistrations.filter(r => r.eventId !== eventId);
+  state.eventRides = state.eventRides.filter(r => r.eventId !== eventId);
+  await db.from('event_rides').delete().eq('event_id', eventId);
+  await db.from('event_registrations').delete().eq('event_id', eventId);
+  await db.from('events').delete().eq('id', eventId);
+  closeModal();
+  showToast('Akce smazána');
+  render();
+}
+
+function openEventDetail(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const nights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  const totalBeer1 = regs.reduce((s,r) => s + (r.beer1Count||0), 0);
+  const totalBeer2 = regs.reduce((s,r) => s + (r.beer2Count||0), 0);
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">🏕️ ${e.name}</div>
+      <div class="modal-subtitle">${formatEventDateFull(e.startDatetime)} – ${formatEventDateFull(e.endDatetime)}<br>${e.venue}</div>
+    </div>
+    <div class="quick-actions">
+      <button onclick="openEventForm('${e.id}')">✎ Upravit</button>
+      ${e.status !== 'settled' ? `<button onclick="settleEvent('${e.id}')" style="background:var(--ink);color:white;">💰 Zúčtovat</button>` : '<span class="status-badge settled">Zúčtováno</span>'}
+    </div>
+    <div class="section-title" style="margin-top:12px;">Přihlášení (${regs.length})</div>
+    ${regs.length === 0 ? '<div class="empty-msg" style="padding:12px;">Nikdo nepřihlášen</div>' : `<ul style="list-style:none;">${regs.map(r => {
+      const m = getMember(r.memberId); if (!m) return '';
+      const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+      const rNights = r.nights ?? defaultNights;
+      const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
+      const arr = r.arrivalDatetime ? `příjezd ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
+      const updatedBadge = r.updatedAt && r.updatedAt !== r.createdAt
+        ? `<span style="font-size:10px;background:#fff3cd;color:#856404;padding:2px 6px;border-radius:10px;margin-left:4px;">Upraveno ${new Date(r.updatedAt).toLocaleString('cs-CZ',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}</span>`
+        : '';
+      const total = rNights*e.priceAccommodation + (r.beer1Count||0)*e.beer1Price + (r.beer2Count||0)*e.beer2Price;
+      return `<li class="attendee" style="align-items:flex-start;padding:10px 0;">
+        <div class="member-avatar" style="margin-top:2px;">${getInitials(m.name)}</div>
+        <div style="flex:1;">
+          <div class="attendee-name">${m.name}${updatedBadge}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">${rNights} nocí · ${[beers,arr].filter(Boolean).join(' · ')}</div>
+          <div style="font-size:12px;font-weight:600;color:var(--primary);margin-top:2px;">Celkem: ${total} Kč</div>
+        </div>
+        ${e.status !== 'settled' ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
+      </li>`;
+    }).join('')}</ul>`}
+    <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px;margin-top:12px;font-size:13px;">
+      <strong>Shrnutí:</strong><br>
+      ${e.beer1Name?`${e.beer1Name}: ${totalBeer1} ks · `:''}${e.beer2Name?`${e.beer2Name}: ${totalBeer2} ks`:''}${(e.beer1Name||e.beer2Name)?'<br>':''}
+      Ubytování: individuální dle člena (viz výše)
+    </div>
+  `;
+  openModal(html);
+}
+
+function adminEditEventReg(eventId, memberId) {
+  const e = getEvent(eventId); if (!e) return;
+  const reg = state.eventRegistrations.find(r => r.eventId===eventId && r.memberId===memberId);
+  if (!reg) return;
+  const m = getMember(memberId); if (!m) return;
+  const defaultNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
+  const nights = reg.nights ?? defaultNights;
+  const b1 = reg.beer1Count||0, b2 = reg.beer2Count||0;
+
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">✎ Upravit přihlášku</div>
+      <div class="modal-subtitle">${m.name} · ${e.name}</div>
+    </div>
+    <div class="form-group">
+      <label>🌙 Počet nocí</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjNights(-1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="nights-cnt" data-count="${nights}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${nights}</span>
+        <button onclick="adjNights(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-total">${nights*e.priceAccommodation}</span> Kč</span>
+      </div>
+    </div>
+    ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
+    ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="openEventDetail('${eventId}')">Zpět</button>
+      <button class="btn btn-primary" onclick="adminSaveEventReg('${eventId}','${memberId}')">Uložit</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function adminSaveEventReg(eventId, memberId) {
+  const reg = state.eventRegistrations.find(r => r.eventId===eventId && r.memberId===memberId);
+  if (!reg) return;
+  reg.beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
+  reg.beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
+  reg.nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
+  reg.updatedAt = new Date().toISOString();
+  await saveEventRegistration_db(reg);
+  closeModal();
+  showToast('✓ Přihláška upravena');
+  openEventDetail(eventId);
+}
+
+async function settleEvent(eventId) {
+  const e = getEvent(eventId);
+  if (!e || e.status === 'settled') return;
+  if (!confirm('Zúčtovat akci? Odečtou se náklady z kont přihlášených.')) return;
+  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  let count = 0;
+  for (const reg of regs) {
+    const nights = reg.nights ?? defaultNights;  // použij individuální počet nocí
+    const accCost = nights * e.priceAccommodation;
+    const beer1Cost = (reg.beer1Count||0) * e.beer1Price;
+    const beer2Cost = (reg.beer2Count||0) * e.beer2Price;
+    const total = accCost + beer1Cost + beer2Cost;
+    if (total === 0) { count++; continue; }
+    const desc = [
+      `Akce: ${e.name}`,
+      accCost>0?`ubyt. ${nights} nocí × ${e.priceAccommodation} Kč = ${accCost} Kč`:'',
+      beer1Cost>0?`${reg.beer1Count}× ${e.beer1Name} ${beer1Cost} Kč`:'',
+      beer2Cost>0?`${reg.beer2Count}× ${e.beer2Name} ${beer2Cost} Kč`:''
+    ].filter(Boolean).join(', ');
+    await addTransaction({ memberId: reg.memberId, amount: -total, type: 'event_charge', description: desc, createdBy: state.currentUserId });
+    count++;
+  }
+  e.status = 'settled';
+  await saveEvent(e);
+  closeModal();
+  showToast(`✓ Akce zúčtována: ${count} členů`);
+  render();
+}
+
+function renderMemberEvents() {
+  const now = new Date();
+  const allEvents = [...state.events].sort((a,b) => new Date(a.startDatetime)-new Date(b.startDatetime));
+  if (allEvents.length === 0) return `<div class="empty-msg"><div class="icon">🏕️</div><div>Zatím žádné akce</div></div>`;
+  return allEvents.map(e => renderEventCard(e)).join('');
+}
+
+function renderEventCard(e) {
+  const myReg = getMyEventReg(e.id);
+  const regs = state.eventRegistrations.filter(r => r.eventId === e.id);
+  const rides = getEventRides(e.id);
+  const nights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  const isPast = new Date(e.endDatetime) < new Date();
+  return `
+    <div class="training" style="border-left:3px solid var(--accent);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+        <div>
+          <div style="font-weight:700;font-size:16px;">🏕️ ${e.name}</div>
+          <div style="font-size:13px;color:var(--ink-soft);">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
+        </div>
+        ${e.status==='settled'?'<span class="status-badge settled">Zúčtováno</span>':''}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(${[1, e.beer1Name?1:0, e.beer2Name?1:0].filter(Boolean).length},1fr);gap:6px;margin-bottom:12px;font-size:13px;">
+        <div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🏠 Ubytování<br><strong>${e.priceAccommodation} Kč/noc</strong><br><span style="color:var(--ink-soft)">${nights} nocí = ${nights*e.priceAccommodation} Kč</span></div>
+        ${e.beer1Name?`<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🍺 ${e.beer1Name}<br><strong>${e.beer1Price} Kč/ks</strong></div>`:''}
+        ${e.beer2Name?`<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🍺 ${e.beer2Name}<br><strong>${e.beer2Price} Kč/ks</strong></div>`:''}
+      </div>
+      ${myReg?`
+        <div style="background:rgba(26,95,90,0.08);border:1.5px solid rgba(26,95,90,0.25);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
+          <div style="font-weight:700;color:var(--primary);margin-bottom:4px;">✓ Přihlášen/a</div>
+          <div style="font-size:13px;color:var(--ink-soft);">${[e.beer1Name&&myReg.beer1Count>0?`${myReg.beer1Count}× ${e.beer1Name}`:'', e.beer2Name&&myReg.beer2Count>0?`${myReg.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(' · ')}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
+          ${!isPast?`<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>`:''}
+        </div>
+      `:!isPast?`<button class="btn btn-primary" style="width:100%;margin-bottom:8px;" onclick="openEventRegistration('${e.id}')">✓ Přihlásit se na akci</button>`:''}
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <button class="btn-choice" style="flex:1;" onclick="showEventAttendees('${e.id}')">👥 ${regs.length} přihlášených</button>
+        <button class="btn-choice" style="flex:1;" onclick="showEventRides('${e.id}')">🚗 Odvoz (${rides.length})</button>
+      </div>
+      ${!isPast?`<button class="btn-choice" style="width:100%;" onclick="openRideOffer('${e.id}')">🚗 Nabídnout/upravit odvoz</button>`:''}
+    </div>
+  `;
+}
+
+function openEventRegistration(eventId) {
+  const e = getEvent(eventId); if (!e) return;
+  const myReg = getMyEventReg(eventId);
+  const maxNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
+  const b1 = myReg?myReg.beer1Count:0, b2 = myReg?myReg.beer2Count:0;
+  const arrVal = myReg&&myReg.arrivalDatetime?myReg.arrivalDatetime.slice(0,16):'';
+  const defaultNights = myReg?.nights ?? maxNights;
+
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">🏕️ ${e.name}</div>
+      <div class="modal-subtitle">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
+    </div>
+
+    <div class="form-group">
+      <label>🕐 Kdy přijedeš?</label>
+      <input type="datetime-local" id="ev-arrival" value="${arrVal}"
+        oninput="autoCalcNights('${e.endDatetime}')">
+    </div>
+
+    <div class="form-group">
+      <label>🌙 Počet nocí</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjNights(-1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="nights-cnt" data-count="${defaultNights}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${defaultNights}</span>
+        <button onclick="adjNights(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-total">${defaultNights*e.priceAccommodation}</span> Kč z konta</span>
+      </div>
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Výchozí: ${maxNights} nocí (délka akce). Uprav pokud přijedeš/odjedeš dříve nebo bereš děti.</div>
+    </div>
+
+    ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
+    ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
+
+    <div class="form-actions">
+      ${myReg?`<button class="btn btn-danger" onclick="cancelEventRegistration('${eventId}')">Odhlásit se</button>`:''}
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" onclick="doSaveEventReg('${eventId}')">${myReg?'Uložit':'Přihlásit se'}</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+function adjNights(delta) {
+  const el = document.getElementById('nights-cnt');
+  if (!el) return;
+  let count = parseInt(el.dataset.count||'1') + delta;
+  if (count < 0) count = 0;
+  el.dataset.count = count;
+  el.textContent = count;
+  // Update accommodation total
+  const totalEl = document.getElementById('acc-total');
+  if (totalEl) {
+    // Find price from state - get eventId from save button
+    const btn = document.querySelector('[onclick*="doSaveEventReg"]');
+    const eventId = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+    if (eventId) {
+      const ev = getEvent(eventId);
+      if (ev) totalEl.textContent = count * ev.priceAccommodation;
+    }
+  }
+}
+
+function autoCalcNights(endDatetimeISO) {
+  const arrivalInput = document.getElementById('ev-arrival');
+  if (!arrivalInput || !arrivalInput.value) return;
+  const arrival = new Date(arrivalInput.value);
+  const end = new Date(endDatetimeISO);
+  const nights = Math.max(0, Math.ceil((end - arrival) / (1000*60*60*24)));
+  const el = document.getElementById('nights-cnt');
+  if (el) {
+    el.dataset.count = nights;
+    el.textContent = nights;
+  }
+  // Update total
+  adjNights(0);
+}
+
+function adjBeer(elId, delta, price) {
+  const el = document.getElementById(elId);
+  let count = parseInt(el.dataset.count||'0') + delta;
+  if (count < 0) count = 0;
+  el.dataset.count = count;
+  el.textContent = count;
+  const totalEl = document.getElementById(elId==='b1c'?'b1t':'b2t');
+  if (totalEl) totalEl.textContent = count * price;
+}
+
+async function doSaveEventReg(eventId) {
+  const e = getEvent(eventId); if (!e) return;
+  const beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
+  const beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
+  const nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
+  const arrivalVal = document.getElementById('ev-arrival').value;
+  const now = new Date().toISOString();
+
+  let myReg = getMyEventReg(eventId);
+  if (myReg) {
+    myReg.beer1Count = beer1Count; myReg.beer2Count = beer2Count;
+    myReg.nights = nights;
+    myReg.arrivalDatetime = arrivalVal ? new Date(arrivalVal).toISOString() : null;
+    myReg.updatedAt = now;
+  } else {
+    myReg = {
+      id: genId(), eventId, memberId: state.currentUserId,
+      beer1Count, beer2Count, nights,
+      arrivalDatetime: arrivalVal ? new Date(arrivalVal).toISOString() : null,
+      updatedAt: now, createdAt: now
+    };
+    state.eventRegistrations.push(myReg);
+  }
+  await saveEventRegistration_db(myReg);
+  closeModal();
+  showToast('✓ Přihláška uložena');
+  render();
+}
+
+async function saveEventRegistration_db(reg) {
+  const { error } = await db.from('event_registrations').upsert({
+    id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
+    beer1_count: reg.beer1Count||0, beer2_count: reg.beer2Count||0,
+    nights: reg.nights || null,
+    arrival_datetime: reg.arrivalDatetime||null,
+    updated_at: new Date().toISOString()
+  });
+  if (error) { console.error('saveEventReg:', error); showToast('Chyba ukládání přihlášky'); }
+}
+
+async function cancelEventRegistration(eventId) {
+  const myReg = getMyEventReg(eventId); if (!myReg) return;
+  if (!confirm('Odhlásit se z akce?')) return;
+  state.eventRegistrations = state.eventRegistrations.filter(r => r.id !== myReg.id);
+  await deleteEventRegistration(myReg.id);
+  closeModal(); showToast('Odhlášeno'); render();
+}
+
+function showEventAttendees(eventId) {
+  const e = getEvent(eventId); if (!e) return;
+  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header"><div class="modal-title">👥 Přihlášení</div><div class="modal-subtitle">${e.name}</div></div>
+    ${regs.length===0?'<div class="empty-msg">Nikdo nepřihlášen</div>':`<ul style="list-style:none;">${regs.map(r => {
+      const m = getMember(r.memberId); if (!m) return '';
+      const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
+      const arr = r.arrivalDatetime?`🕐 ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
+      return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,arr].filter(Boolean).join(' · ')}</div></div></li>`;
+    }).join('')}</ul>`}
+  `;
+  openModal(html);
+}
+
+function openRideOffer(eventId) {
+  const e = getEvent(eventId);
+  const myRide = state.eventRides.find(r => r.eventId===eventId && r.driverId===state.currentUserId);
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header"><div class="modal-title">🚗 Nabídnout odvoz</div><div class="modal-subtitle">${e.name}</div></div>
+    <div class="form-group"><label>Směr</label>
+      <select id="ride-dir" style="width:100%;padding:10px;border:1.5px solid var(--line);border-radius:10px;font-family:inherit;font-size:15px;">
+        <option value="there" ${myRide?.direction==='there'?'selected':''}>Jen tam</option>
+        <option value="back" ${myRide?.direction==='back'?'selected':''}>Jen zpět</option>
+        <option value="both" ${!myRide||myRide.direction==='both'?'selected':''}>Tam i zpět</option>
+      </select>
+    </div>
+    <div class="form-group"><label>Počet volných míst (bez řidiče)</label><input type="number" id="ride-seats" min="1" max="8" value="${myRide?.seats||3}"></div>
+    <div class="form-group"><label>Datum a čas odjezdu</label><input type="datetime-local" id="ride-dt" value="${myRide?.departureDatetime?.slice(0,16)||e.startDatetime.slice(0,16)}"></div>
+    <div class="form-group"><label>Místo odjezdu</label><input type="text" id="ride-place" placeholder="Náměstí Míru, Praha" value="${myRide?.departurePlace||''}"></div>
+    <div class="form-group"><label>Cena (jen informace, platí se mimo aplikaci)</label><input type="text" id="ride-price" placeholder="3 Kč/km nebo 200 Kč za jízdu" value="${myRide?.priceInfo||''}"></div>
+    <div class="form-group"><label>Poznámka</label><input type="text" id="ride-note" placeholder="Vezmu snowboardy..." value="${myRide?.note||''}"></div>
+    <div class="form-actions">
+      ${myRide?`<button class="btn btn-danger" onclick="deleteMyRide('${eventId}')">Zrušit nabídku</button>`:''}
+      <button class="btn btn-secondary" onclick="closeModal()">Zavřít</button>
+      <button class="btn btn-primary" onclick="doSaveRide('${eventId}')">Uložit nabídku</button>
+    </div>
+  `;
+  openModal(html);
+}
+
+async function doSaveRide(eventId) {
+  const direction = document.getElementById('ride-dir').value;
+  const seats = parseInt(document.getElementById('ride-seats').value)||1;
+  const dt = document.getElementById('ride-dt').value;
+  const place = document.getElementById('ride-place').value.trim();
+  const price = document.getElementById('ride-price').value.trim();
+  const note = document.getElementById('ride-note').value.trim();
+  let myRide = state.eventRides.find(r => r.eventId===eventId && r.driverId===state.currentUserId);
+  if (myRide) {
+    Object.assign(myRide, { direction, seats, departureDatetime: dt?new Date(dt).toISOString():null, departurePlace: place, priceInfo: price, note });
+  } else {
+    myRide = { id: genId(), eventId, driverId: state.currentUserId, direction, seats, departureDatetime: dt?new Date(dt).toISOString():null, departurePlace: place, priceInfo: price, note, reservations: [], createdAt: new Date().toISOString() };
+    state.eventRides.push(myRide);
+  }
+  await saveEventRide(myRide);
+  closeModal(); showToast('✓ Nabídka odvozu uložena'); render();
+}
+
+async function deleteMyRide(eventId) {
+  if (!confirm('Zrušit nabídku odvozu?')) return;
+  const myRide = state.eventRides.find(r => r.eventId===eventId && r.driverId===state.currentUserId);
+  if (!myRide) return;
+  state.eventRides = state.eventRides.filter(r => r.id !== myRide.id);
+  await deleteEventRide(myRide.id);
+  closeModal(); showToast('Nabídka zrušena'); render();
+}
+
+function showEventRides(eventId) {
+  const e = getEvent(eventId);
+  const rides = getEventRides(eventId);
+  const userId = state.currentUserId;
+  const dirLabel = { there: 'Tam', back: 'Zpět', both: 'Tam i zpět' };
+  const html = `
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header"><div class="modal-title">🚗 Odvoz</div><div class="modal-subtitle">${e.name}</div></div>
+    ${rides.length===0?'<div class="empty-msg">Nikdo zatím nenabídl odvoz</div>':rides.map(ride => {
+      const driver = getMember(ride.driverId); if (!driver) return '';
+      const isDriver = ride.driverId===userId;
+      const reservations = ride.reservations||[];
+      const myRes = reservations.find(r => r.memberId===userId);
+      const freeSeats = ride.seats - reservations.length;
+      return `<div style="background:rgba(15,32,39,0.04);border-radius:12px;padding:14px;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-weight:700;">${driver.name}${isDriver?' (ty)':''}</div>
+          <div style="font-size:13px;background:var(--primary);color:white;padding:3px 10px;border-radius:20px;">${dirLabel[ride.direction]||ride.direction}</div>
+        </div>
+        <div style="font-size:13px;color:var(--ink-soft);margin-bottom:10px;">
+          ${ride.departureDatetime?`🕐 ${formatEventDate(ride.departureDatetime)} ${new Date(ride.departureDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}
+          ${ride.departurePlace?` · 📍 ${ride.departurePlace}`:''}
+          ${ride.priceInfo?`<br>💰 ${ride.priceInfo}`:''}
+          ${ride.note?`<br>📝 ${ride.note}`:''}
+        </div>
+        ${renderCarSeats(ride, userId)}
+        ${!isDriver?(myRes?`<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="cancelRideRes('${ride.id}','${eventId}')">Zrušit rezervaci</button>`:freeSeats>0?`<button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="reserveRide('${ride.id}','${eventId}')">Rezervovat místo</button>`:`<div style="text-align:center;color:var(--ink-soft);font-size:13px;margin-top:8px;">Obsazeno</div>`):''}
+      </div>`;
+    }).join('')}
+  `;
+  openModal(html);
+}
+
+function renderCarSeats(ride, userId) {
+  const reservations = ride.reservations||[];
+  const driver = getMember(ride.driverId);
+  const totalSeats = ride.seats;
+  const cols = totalSeats<=3?2:totalSeats<=5?3:4;
+  const allSeats = [
+    {type:'driver', member: driver},
+    ...Array.from({length: totalSeats}, (_,i) => { const res = reservations[i]; const m = res?getMember(res.memberId):null; return {type:'pass', member:m, empty:!m}; })
+  ];
+  const seatBg = s => s.type==='driver'?'background:var(--primary);color:white;':!s.empty?'background:var(--semafor-green);color:white;':'background:#f0f0f0;color:#999;';
+  return `
+    <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:6px;max-width:260px;margin:0 auto 8px;">
+      ${allSeats.map(s=>`<div style="border-radius:8px;padding:6px 4px;text-align:center;font-size:10px;font-weight:600;${seatBg(s)}">${s.type==='driver'?`🚗<br>${s.member?getInitials(s.member.name):'?'}`:s.empty?'Volno':`${getInitials(s.member.name)}<br><span style="font-size:9px;opacity:0.8;">${s.member.name.split(' ')[0]}</span>`}</div>`).join('')}
+    </div>
+    <div style="text-align:center;font-size:12px;color:var(--ink-soft);">${reservations.length}/${totalSeats} obsazeno · ${totalSeats-reservations.length} volných</div>
+  `;
+}
+
+async function reserveRide(rideId, eventId) {
+  const ride = state.eventRides.find(r => r.id===rideId); if (!ride) return;
+  if ((ride.reservations||[]).length >= ride.seats) { showToast('Auto je plné'); return; }
+  if (!ride.reservations) ride.reservations=[];
+  ride.reservations.push({memberId: state.currentUserId});
+  await saveEventRide(ride);
+  closeModal(); showToast('✓ Místo rezervováno'); showEventRides(eventId);
+}
+
+async function cancelRideRes(rideId, eventId) {
+  const ride = state.eventRides.find(r => r.id===rideId); if (!ride) return;
+  ride.reservations = (ride.reservations||[]).filter(r => r.memberId!==state.currentUserId);
+  await saveEventRide(ride);
+  closeModal(); showToast('Rezervace zrušena'); showEventRides(eventId);
+}
+
+function getNextMonday() {
+  const day = now.getDay(); // 0=Sun, 1=Mon...
+  const daysUntilMonday = day === 1 ? 7 : (8 - day) % 7;
+  const next = new Date(now);
+  next.setDate(now.getDate() + daysUntilMonday);
+  next.setHours(19, 30, 0, 0);
+  return next;
+}
+
+async function generateSaunaTraining() {
+  const nextMonday = getNextMonday();
+
+  // Dvojitá kontrola
+  const exists = state.trainings.some(t => {
+    const d = new Date(t.datetime);
+    return t.venue && t.venue.toLowerCase().includes('sauna') &&
+      d.getFullYear() === nextMonday.getFullYear() &&
+      d.getMonth() === nextMonday.getMonth() &&
+      d.getDate() === nextMonday.getDate();
+  });
+  if (exists) {
+    showToast('Pondělní sauna již existuje');
+    return;
+  }
+
+  const training = {
+    id: genId(),
+    datetime: nextMonday.toISOString(),
+    venue: 'Sauna',
+    price: 30,
+    status: 'open',
+    registrations: [],
+    declined: [],
+    lookingForPartner: [],
+    arrivalTimes: {},
+    attendedIds: [],
+    createdAt: new Date().toISOString()
+  };
+
+  state.trainings.push(training);
+  await saveTraining(training);
+  showToast(`✓ Sauna vytvořena: ${formatTrainingDate(nextMonday.toISOString())} 19:30`);
+  render();
+}
+
+// Auto-generování sauny při startu (pokud je přihlášen admin)
+async function autoGenerateSauna() {
+  const user = getCurrentUser();
+  if (!user || (!user.isAdmin && !user.isSaunaAdmin)) return;
+
+  const nextMonday = getNextMonday();
+  const exists = state.trainings.some(t => {
+    const d = new Date(t.datetime);
+    return t.venue && t.venue.toLowerCase().includes('sauna') &&
+      d.getFullYear() === nextMonday.getFullYear() &&
+      d.getMonth() === nextMonday.getMonth() &&
+      d.getDate() === nextMonday.getDate();
+  });
+
+  if (!exists) {
+    console.log('🧖 Auto-generuji pondělní saunu...');
+    await generateSaunaTraining();
+  }
 }
 
 function goTraining(trainingId) {
@@ -1799,10 +2546,55 @@ function renderAdmin() {
   `;
 }
 
+function renderSaunaAdmin() {
+  const now = new Date();
+  const saunaTrainings = state.trainings
+    .filter(t => t.venue && t.venue.toLowerCase().includes('sauna'))
+    .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+
+  const unsettled = saunaTrainings.filter(t => t.status !== 'settled' && new Date(t.datetime) < now);
+  const upcoming = saunaTrainings.filter(t => new Date(t.datetime) >= now);
+
+  return `
+    ${renderHeader()}
+    ${renderModeSwitcher()}
+
+    <div class="section-title" style="margin-top: 8px;">🧖 Sauna admin</div>
+
+    ${unsettled.length > 0 ? `
+      <div class="section-title">⏱ Čekají na zúčtování</div>
+      ${unsettled.map(t => `
+        <div class="admin-list-item" onclick="openSettleForm('${t.id}')">
+          <div class="info">
+            <div class="title">${formatTrainingDate(t.datetime)} ${formatTrainingTime(t.datetime)}</div>
+            <div class="subtitle">Sauna · ${t.registrations.length} přihlášených · ${t.price > 0 ? '−' : '+'}${Math.abs(t.price)} Kč</div>
+          </div>
+          <div class="right" style="background: var(--ink); color: white; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600;">Zúčtovat</div>
+        </div>
+      `).join('')}
+    ` : `
+      <div class="empty-msg" style="padding: 20px;">✅ Žádné sauny nečekají na zúčtování</div>
+    `}
+
+    ${upcoming.length > 0 ? `
+      <div class="section-title">Nadcházející sauny</div>
+      ${upcoming.map(t => `
+        <div class="admin-list-item">
+          <div class="info">
+            <div class="title">${formatTrainingDate(t.datetime)} ${formatTrainingTime(t.datetime)}</div>
+            <div class="subtitle">${t.registrations.length} přihlášených</div>
+          </div>
+          <div class="right" style="color: var(--ink-soft);">→</div>
+        </div>
+      `).join('')}
+    ` : ''}
+  `;
+}
+
 function renderAdminTabs() {
   const tabs = [
     { id: 'dashboard', label: '📊 Dashboard' },
-    { id: 'trainings', label: '🧗 Tréninky' },
+    { id: 'trainings', label: '🧗 Tréninky a akce' },
     { id: 'members', label: '👥 Členové' },
     { id: 'settings', label: '⚙ Nastavení' }
   ];
@@ -1947,12 +2739,44 @@ function renderAdminTrainings() {
   const upcoming = state.trainings.filter(t => new Date(t.datetime) >= now);
   const past = state.trainings.filter(t => new Date(t.datetime) < now);
 
+  // Zjisti stav pondělní sauny
+  const nextMonday = getNextMonday();
+  const saunaExists = state.trainings.some(t => {
+    const d = new Date(t.datetime);
+    return t.venue && t.venue.toLowerCase().includes('sauna') &&
+      d.getFullYear() === nextMonday.getFullYear() &&
+      d.getMonth() === nextMonday.getMonth() &&
+      d.getDate() === nextMonday.getDate();
+  });
+
   return `
-    <button class="btn btn-primary" style="width: 100%; margin-bottom: 16px;" onclick="openTrainingForm()">
+    <button class="btn btn-primary" style="width: 100%; margin-bottom: 8px;" onclick="openTrainingForm()">
       + Nový trénink
     </button>
 
-    <div class="section-title">Nadcházející</div>
+    <button class="btn btn-secondary" style="width: 100%; margin-bottom: 8px;" onclick="openEventForm()">
+      🏕️ Nová akce
+    </button>
+
+    <button class="btn btn-secondary" style="width: 100%; margin-bottom: 16px; ${saunaExists ? 'opacity:0.5;' : ''}"
+      onclick="${saunaExists ? 'showToast(\'Pondělní sauna již existuje\')' : 'generateSaunaTraining()'}">
+      🧖 ${saunaExists ? '✓ Sauna ' + formatTrainingDate(nextMonday.toISOString()) + ' již vytvořena' : 'Vytvořit pondělní saunu (' + formatTrainingDate(nextMonday.toISOString()) + ')'}
+    </button>
+
+    ${state.events.length > 0 ? `
+      <div class="section-title">🏕️ Akce</div>
+      ${[...state.events].sort((a,b) => new Date(a.startDatetime) - new Date(b.startDatetime)).map(e => `
+        <div class="admin-list-item" onclick="openEventDetail('${e.id}')">
+          <div class="info">
+            <div class="title">${e.name} <span class="status-badge ${e.status === 'settled' ? 'settled' : 'open'}">${e.status === 'settled' ? 'Zúčtováno' : 'Otevřená'}</span></div>
+            <div class="subtitle">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
+          </div>
+          <div class="right">→</div>
+        </div>
+      `).join('')}
+    ` : ''}
+
+    <div class="section-title">Nadcházející tréninky</div>
     ${upcoming.length === 0 ? `
       <div class="empty-msg">
         <div class="icon">🧗</div>
@@ -2405,7 +3229,7 @@ async function performSettlement(trainingId) {
     return;
   }
 
-  // OCHRANA: zkontroluj zda trénink už není zúčtovaný (dvojité kliknutí / výpadek)
+  // OCHRANA: zkontroluj zda trénink už není zúčtovaný
   if (t.status === 'settled') {
     showToast('Tento trénink už byl zúčtován');
     closeModal();
@@ -2413,65 +3237,92 @@ async function performSettlement(trainingId) {
     return;
   }
 
-  // OCHRANA: zkontroluj v databázi jestli tam nejsou už transakce pro tento trénink
-  const existingTx = state.transactions.filter(tx => tx.trainingId === trainingId);
-  if (existingTx.length > 0) {
-    if (!confirm(`Upozornění: Pro tento trénink už existuje ${existingTx.length} transakcí. Zúčtovat znovu by mohlo způsobit duplicity. Pokračovat?`)) {
-      return;
-    }
-  }
-
-  const attendedIds = t._settlementAttendees || [];
+  // Získej seznam účastníků - musí být v _settlementAttendees
+  const attendedIds = Array.isArray(t._settlementAttendees) ? [...t._settlementAttendees] : [];
+  console.log('🧾 Zúčtování:', trainingId, '| Účastníků:', attendedIds.length, '| IDs:', attendedIds);
 
   if (attendedIds.length === 0) {
     if (!confirm('Nikdo nepřišel. Označit jako zúčtováno bez pohybů?')) return;
   }
 
-  // Bezpečnostní kontrola: t.price musí být číslo
   const price = Number(t.price) || 0;
+  console.log('💰 Cena tréninku:', price, 'Kč');
 
-  let actualCount = 0;
-  for (const memberId of attendedIds) {
-    const member = getMember(memberId);
-    if (!member) {
-      console.warn('Member not found:', memberId);
-      continue;
-    }
-    if (price === 0) {
-      actualCount++;
-      continue; // free training: jen označit, ale neúčtovat
-    }
-    const txType = price > 0 ? 'training_charge' : 'training_reward';
-    await addTransaction({
-      memberId,
-      amount: -price,  // pokud price = 100 (odečte), tx = -100 → konto klesá
-      type: txType,
-      trainingId: t.id,
-      description: `${t.venue} (${formatTrainingDate(t.datetime)})`,
-      createdBy: state.currentUserId
-    });
-    actualCount++;
-  }
-
+  // KROK 1: Nejdřív označ trénink jako settled a ulož attendedIds
+  // (tím se zabrání dvojímu zúčtování i při výpadku)
   t.status = 'settled';
   t.attendedIds = attendedIds;
   t.settledAt = new Date().toISOString();
   delete t._settlementAttendees;
-
-  // Přepočet všech sald pro jistotu
-  state.members.forEach(m => recalcBalance(m.id));
-
-  // Save training and all affected members (transactions are saved via addTransaction)
   await saveTraining(t);
+  console.log('✅ Trénink uložen jako settled');
+
+  // KROK 2: Zapiš transakce pro každého účastníka
+  let actualCount = 0;
+  let errorCount = 0;
+
+  // Zobraz progress
+  showToast(`⏳ Zapisuji transakce (0/${attendedIds.length})...`);
+
+  for (let i = 0; i < attendedIds.length; i++) {
+    const memberId = attendedIds[i];
+    const member = getMember(memberId);
+    if (!member) {
+      console.warn('⚠ Member not found:', memberId);
+      errorCount++;
+      continue;
+    }
+    if (price === 0) {
+      actualCount++;
+      continue;
+    }
+    try {
+      const txType = price > 0 ? 'training_charge' : 'training_reward';
+      const result = await addTransaction({
+        memberId,
+        amount: -price,
+        type: txType,
+        trainingId: t.id,
+        description: `${t.venue} (${formatTrainingDate(t.datetime)})`,
+        createdBy: state.currentUserId
+      });
+      if (result) {
+        console.log(`✅ (${i+1}/${attendedIds.length}) Transakce pro: ${member.name}`);
+        actualCount++;
+      } else {
+        console.error(`❌ (${i+1}/${attendedIds.length}) Selhání pro: ${member.name}`);
+        errorCount++;
+      }
+      // Update progress toast
+      if (attendedIds.length > 3) {
+        showToast(`⏳ Zapisuji transakce (${actualCount}/${attendedIds.length})...`);
+      }
+    } catch (err) {
+      console.error('❌ Chyba transakce pro', member.name, ':', err);
+      errorCount++;
+    }
+  }
+
+  // KROK 3: Přepočítej a ulož sálda
+  state.members.forEach(m => recalcBalance(m.id));
   for (const memberId of attendedIds) {
     const member = getMember(memberId);
-    if (member) await saveMember(member);
+    if (member) {
+      await saveMember(member);
+      console.log('💾 Člen uložen:', member.name, '| Balance:', member.balance);
+    }
   }
+
   closeModal();
-  const delta = price === 0 ? 'bez pohybů' :
-                price > 0 ? `−${price} Kč × ${actualCount}` :
-                `+${Math.abs(price)} Kč × ${actualCount}`;
-  showToast(`✓ Zúčtováno: ${actualCount} členů (${delta})`);
+
+  if (errorCount > 0) {
+    showToast(`⚠ Zúčtováno ${actualCount} členů, ${errorCount} chyb – zkontroluj konzoli`);
+  } else {
+    const delta = price === 0 ? 'bez pohybů' :
+                  price > 0 ? `−${price} Kč × ${actualCount}` :
+                  `+${Math.abs(price)} Kč × ${actualCount}`;
+    showToast(`✓ Zúčtováno: ${actualCount} členů (${delta})`);
+  }
   render();
 }
 
@@ -2550,6 +3401,13 @@ function openMemberForm(editId) {
       </label>
     </div>
 
+    <div class="form-group">
+      <label style="display: flex; align-items: center; gap: 8px;">
+        <input type="checkbox" id="m-sauna-admin" ${editing && editing.isSaunaAdmin ? 'checked' : ''} style="width: auto;">
+        Sauna admin – může zúčtovat pouze tréninky "Sauna"
+      </label>
+    </div>
+
     <div class="form-actions">
       ${editing && editing.id !== state.currentUserId ? `<button class="btn btn-danger" onclick="deleteMember('${editing.id}')">Smazat</button>` : ''}
       <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
@@ -2563,6 +3421,7 @@ async function saveMemberForm(editId) {
   const name = document.getElementById('m-name').value.trim();
   const email = document.getElementById('m-email').value.trim().toLowerCase();
   const isAdmin = document.getElementById('m-admin').checked;
+  const isSaunaAdmin = document.getElementById('m-sauna-admin').checked;
   if (!name) {
     showToast('Vyplň jméno');
     return;
@@ -2584,6 +3443,7 @@ async function saveMemberForm(editId) {
     m.name = name;
     m.email = email;
     m.isAdmin = isAdmin;
+    m.isSaunaAdmin = isSaunaAdmin;
     memberToSave = m;
   } else {
     const balance = parseInt(document.getElementById('m-balance').value) || 0;
@@ -2592,6 +3452,7 @@ async function saveMemberForm(editId) {
       name,
       email,
       isAdmin,
+      isSaunaAdmin,
       balance: 0,
       createdAt: new Date().toISOString()
     };
@@ -3032,11 +3893,10 @@ function loadDemoData() {
 
   const isLocal = window.location.protocol === 'file:';
   if (isLocal) {
-    // Demo režim – načti ukázková data, nepotřebujeme Supabase
     loadDemoData();
-    // Nepřepisuj currentUserId z localStorage v demo módu
   } else {
     await loadAllData();
+    await autoGenerateSauna();
   }
   render();
 })();
