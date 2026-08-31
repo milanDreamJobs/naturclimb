@@ -705,6 +705,7 @@ const state = {
   setup: null,
   members: [],
   trainings: [],
+  cancelledTrainings: [],
   transactions: [],
   events: [],
   eventRegistrations: [],
@@ -712,7 +713,7 @@ const state = {
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
-  ui: { historyView: false, selectedMemberId: null, selectedTrainingId: null }
+  ui: { historyView: false, selectedMemberId: null, selectedTrainingId: null, memberSearch: '' }
 };
 
 // ============================================
@@ -789,7 +790,7 @@ async function loadAllData() {
       .from('trainings').select('*').order('datetime');
     if (tErr) console.error('❌ Trainings error:', tErr);
     console.log('🧗 Trainings loaded:', (trainingsData || []).length);
-    state.trainings = (trainingsData || []).map(t => ({
+    const allTrainings = (trainingsData || []).map(t => ({
       id: t.id,
       datetime: t.datetime,
       venue: t.venue,
@@ -804,6 +805,10 @@ async function loadAllData() {
       settledAt: t.settled_at,
       createdAt: t.created_at
     }));
+    // Zrusene treninky (napr. sauna, ktera se nekona) drzime stranou:
+    // nezobrazuji se nikde v UI, slouzi jen k tomu, aby je automatika znovu nevytvorila.
+    state.trainings = allTrainings.filter(t => t.status !== 'cancelled');
+    state.cancelledTrainings = allTrainings.filter(t => t.status === 'cancelled');
 
     // Transactions
     const { data: txData, error: txErr } = await db
@@ -2222,8 +2227,58 @@ function getNextMonday() {
   return next;
 }
 
-async function generateSaunaTraining() {
+// --- Zrusene sauny -------------------------------------------------------
+// Kdyz admin saunu smaze, nesmi ji automatika na stejny termin vytvorit znovu.
+// Drzime to na dvou mistech: v DB (status 'cancelled') i lokalne v prohlizeci,
+// aby to fungovalo i kdyby zapis do DB neprosel.
+const SAUNA_SKIP_KEY = 'naturclimb_saunaSkip';
+
+function dayKey(d) {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${x.getMonth() + 1}-${x.getDate()}`;
+}
+
+function getSaunaSkipDates() {
+  try { return JSON.parse(localStorage.getItem(SAUNA_SKIP_KEY) || '[]'); } catch (e) { return []; }
+}
+
+function saveSaunaSkipDates(list) {
+  try { localStorage.setItem(SAUNA_SKIP_KEY, JSON.stringify(list.slice(-20))); } catch (e) {}
+}
+
+function addSaunaSkipDate(d) {
+  const list = getSaunaSkipDates();
+  const k = dayKey(d);
+  if (!list.includes(k)) list.push(k);
+  saveSaunaSkipDates(list);
+}
+
+function removeSaunaSkipDate(d) {
+  const k = dayKey(d);
+  saveSaunaSkipDates(getSaunaSkipDates().filter(x => x !== k));
+}
+
+function isSaunaCancelled(date) {
+  const k = dayKey(date);
+  if (getSaunaSkipDates().includes(k)) return true;
+  return (state.cancelledTrainings || []).some(t =>
+    t.venue && t.venue.toLowerCase().includes('sauna') && dayKey(t.datetime) === k);
+}
+
+// Rucni vytvoreni sauny prebije predchozi zruseni - uklidime stare zaznamy.
+async function clearCancelledSauna(date) {
+  const k = dayKey(date);
+  removeSaunaSkipDate(date);
+  const hits = (state.cancelledTrainings || []).filter(t =>
+    t.venue && t.venue.toLowerCase().includes('sauna') && dayKey(t.datetime) === k);
+  for (const t of hits) await deleteTrainingFromDb(t.id);
+  state.cancelledTrainings = (state.cancelledTrainings || []).filter(t => !hits.includes(t));
+}
+
+async function generateSaunaTraining(manual = true) {
   const nextMonday = getNextMonday();
+
+  if (manual) await clearCancelledSauna(nextMonday);
 
   // Dvojitá kontrola
   const exists = state.trainings.some(t => {
@@ -2264,6 +2319,10 @@ async function autoGenerateSauna() {
   if (!user || (!user.isAdmin && !user.isSaunaAdmin)) return;
 
   const nextMonday = getNextMonday();
+
+  // Admin saunu na tento termin zrusil - nevracime ji zpet.
+  if (isSaunaCancelled(nextMonday)) return;
+
   const exists = state.trainings.some(t => {
     const d = new Date(t.datetime);
     return t.venue && t.venue.toLowerCase().includes('sauna') &&
@@ -2274,7 +2333,7 @@ async function autoGenerateSauna() {
 
   if (!exists) {
     console.log('🧖 Auto-generuji pondělní saunu...');
-    await generateSaunaTraining();
+    await generateSaunaTraining(false);
   }
 }
 
@@ -2935,6 +2994,8 @@ async function saveTrainingForm(editId) {
 
 async function deleteTraining(id) {
   if (!confirm('Opravdu smazat tento trénink?')) return;
+  const removed = getTraining(id);
+  const isSauna = !!(removed && removed.venue && removed.venue.toLowerCase().includes('sauna'));
   const txsToRemove = state.transactions.filter(tx => tx.trainingId === id);
   state.transactions = state.transactions.filter(tx => tx.trainingId !== id);
   state.trainings = state.trainings.filter(t => t.id !== id);
@@ -2942,15 +3003,26 @@ async function deleteTraining(id) {
   const affectedMembers = new Set(txsToRemove.map(tx => tx.memberId));
   affectedMembers.forEach(mid => recalcBalance(mid));
 
-  // Delete from Supabase
-  await deleteTrainingFromDb(id);
+  // Saunu aplikace generuje sama - kdyz ji admin smaze, ulozime misto smazani
+  // priznak 'zruseno', aby ji automatika na stejny termin nevytvorila znovu.
+  if (isSauna) {
+    addSaunaSkipDate(removed.datetime);
+    const cancelled = Object.assign({}, removed, {
+      status: 'cancelled',
+      registrations: [], declined: [], lookingForPartner: [], attendedIds: []
+    });
+    state.cancelledTrainings.push(cancelled);
+    await saveTraining(cancelled);
+  } else {
+    await deleteTrainingFromDb(id);
+  }
   // Update balances of affected members in Supabase
   for (const mid of affectedMembers) {
     const member = getMember(mid);
     if (member) await saveMember(member);
   }
   closeModal();
-  showToast('Trénink smazán');
+  showToast(isSauna ? 'Sauna zrušena – sama se už nevytvoří' : 'Trénink smazán');
   render();
 }
 
@@ -3330,10 +3402,48 @@ async function performSettlement(trainingId) {
 // ============================================
 // ADMIN - MEMBERS
 // ============================================
+// Hledani bez ohledu na diakritiku a velikost pismen ("dvorak" najde "Dvorak").
+function normText(v) {
+  return String(v == null ? '' : v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function escapeAttr(v) {
+  return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// Filtrujeme primo v DOM (bez prekresleni), aby policko neztratilo kurzor.
+function filterMembers(q) {
+  state.ui.memberSearch = q;
+  const needle = normText(q).trim();
+  const items = document.querySelectorAll('#member-list .admin-list-item');
+  let visible = 0;
+  items.forEach(el => {
+    const hay = el.getAttribute('data-search') || '';
+    const show = !needle || hay.includes(needle);
+    el.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const empty = document.getElementById('member-search-empty');
+  if (empty) empty.style.display = (items.length && visible === 0) ? '' : 'none';
+}
+
+function clearMemberSearch() {
+  state.ui.memberSearch = '';
+  const input = document.getElementById('member-search');
+  if (input) input.value = '';
+  filterMembers('');
+  if (input) input.focus();
+}
+
 function renderAdminMembers() {
   state.members.forEach(m => recalcBalance(m.id));
   const settings = getSettings();
   const sorted = [...state.members].sort((a, b) => a.balance - b.balance);
+
+  const needle = normText(state.ui.memberSearch || '').trim();
+  const visibleCount = needle
+    ? sorted.filter(m => normText(`${m.name} ${m.email || ''}`).includes(needle)).length
+    : sorted.length;
 
   return `
     <div class="quick-actions" style="margin-bottom: 16px;">
@@ -3341,28 +3451,49 @@ function renderAdminMembers() {
       <button onclick="openBulkImport()">📥 Hromadný import</button>
     </div>
 
+    ${sorted.length > 5 ? `
+      <div class="form-group" style="margin-bottom: 12px; position: relative;">
+        <input type="search" id="member-search" autocomplete="off"
+          placeholder="Hledat člena – jméno nebo email"
+          value="${escapeAttr(state.ui.memberSearch || '')}"
+          oninput="filterMembers(this.value)">
+        <div style="font-size: 12px; color: var(--ink-soft); margin-top: 6px;">
+          ${sorted.length} členů celkem
+        </div>
+      </div>
+    ` : ''}
+
     ${sorted.length === 0 ? `
       <div class="empty-msg">
         <div class="icon">👥</div>
         <div>Žádní členové. Přidej prvního.</div>
         <button class="btn btn-primary" style="margin-top: 16px;" onclick="openMemberForm()">+ Přidat člena</button>
       </div>
-    ` : sorted.map(m => {
+    ` : '<div id="member-list">' + sorted.map(m => {
       let badge = '';
       let amountClass = '';
+      const hay = normText(`${m.name} ${m.email || ''}`);
+      const hidden = needle && !hay.includes(needle);
       if (m.balance < settings.debtLimit) { badge = '<span class="status-badge" style="background: var(--accent-dim); color: var(--accent);">DLUH</span>'; amountClass = 'red'; }
       else if (m.balance > settings.creditLimit) { badge = '<span class="status-badge open">PŘEPLATEK</span>'; amountClass = 'green'; }
       return `
-        <div class="admin-list-item" onclick="openMemberDetail('${m.id}')">
+        <div class="admin-list-item" onclick="openMemberDetail('${m.id}')"
+          data-search="${escapeAttr(hay)}"${hidden ? ' style="display: none;"' : ''}>
           <div class="member-avatar">${getInitials(m.name)}</div>
           <div class="info">
-            <div class="title">${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''} ${badge}</div>
+            <div class="title">${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''}${m.isSaunaAdmin ? ' <span class="admin-badge" style="background: var(--warning);">SAUNA</span>' : ''} ${badge}</div>
             <div class="subtitle">${m.email || 'bez emailu'}</div>
           </div>
           <div class="right ${amountClass}">${formatKc(m.balance)}</div>
         </div>
       `;
-    }).join('')}
+    }).join('') + `
+      <div id="member-search-empty" class="empty-msg" style="display: ${visibleCount === 0 ? '' : 'none'};">
+        <div class="icon">🔍</div>
+        <div>Nikdo takový tu není.</div>
+        <button class="btn btn-secondary" style="margin-top: 12px;" onclick="clearMemberSearch()">Zrušit hledání</button>
+      </div>
+    </div>`}
   `;
 }
 
