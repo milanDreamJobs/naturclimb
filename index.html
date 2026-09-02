@@ -1702,11 +1702,11 @@ function openEventForm(editId) {
     </div>
     <div class="form-group">
       <label>Začátek akce</label>
-      <input type="datetime-local" id="ev-start" value="${editing ? editing.startDatetime.slice(0,16) : ''}">
+      <input type="datetime-local" id="ev-start" value="${editing ? toLocalInput(editing.startDatetime) : ''}">
     </div>
     <div class="form-group">
       <label>Konec akce</label>
-      <input type="datetime-local" id="ev-end" value="${editing ? editing.endDatetime.slice(0,16) : ''}">
+      <input type="datetime-local" id="ev-end" value="${editing ? toLocalInput(editing.endDatetime) : ''}">
     </div>
     <div class="section-title" style="margin: 16px 0 8px;">Ubytování</div>
     <div class="form-group">
@@ -1939,12 +1939,23 @@ function renderEventCard(e) {
   `;
 }
 
+// ISO datum -> hodnota pro <input type="datetime-local"> v mistnim case.
+// (Pouhy .slice(0,16) na ISO retezci ukazuje cas v UTC, tj. v lete o 2 hodiny mene.)
+function toLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function openEventRegistration(eventId) {
   const e = getEvent(eventId); if (!e) return;
   const myReg = getMyEventReg(eventId);
   const maxNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
   const b1 = myReg?myReg.beer1Count:0, b2 = myReg?myReg.beer2Count:0;
-  const arrVal = myReg&&myReg.arrivalDatetime?myReg.arrivalDatetime.slice(0,16):'';
+  // Kdyz clovek jeste prijezd nezadal, nabidneme zacatek akce (ne dnesek).
+  const arrVal = myReg && myReg.arrivalDatetime ? toLocalInput(myReg.arrivalDatetime) : toLocalInput(e.startDatetime);
   const defaultNights = myReg?.nights ?? maxNights;
 
   const html = `
@@ -2109,7 +2120,7 @@ function openRideOffer(eventId) {
       </select>
     </div>
     <div class="form-group"><label>Počet volných míst (bez řidiče)</label><input type="number" id="ride-seats" min="1" max="8" value="${myRide?.seats||3}"></div>
-    <div class="form-group"><label>Datum a čas odjezdu</label><input type="datetime-local" id="ride-dt" value="${myRide?.departureDatetime?.slice(0,16)||e.startDatetime.slice(0,16)}"></div>
+    <div class="form-group"><label>Datum a čas odjezdu</label><input type="datetime-local" id="ride-dt" value="${toLocalInput(myRide?.departureDatetime || e.startDatetime)}"></div>
     <div class="form-group"><label>Místo odjezdu</label><input type="text" id="ride-place" placeholder="Náměstí Míru, Praha" value="${myRide?.departurePlace||''}"></div>
     <div class="form-group"><label>Cena (jen informace, platí se mimo aplikaci)</label><input type="text" id="ride-price" placeholder="3 Kč/km nebo 200 Kč za jízdu" value="${myRide?.priceInfo||''}"></div>
     <div class="form-group"><label>Poznámka</label><input type="text" id="ride-note" placeholder="Vezmu snowboardy..." value="${myRide?.note||''}"></div>
