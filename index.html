@@ -1371,7 +1371,7 @@ function renderLogin() {
     </div>
 
     <div style="margin-top: 24px; text-align: center; font-size: 13px; color: var(--ink-soft);">
-      Na e-mail ti přijde šestimístný kód.<br>
+      Na e-mail ti přijde přihlašovací kód.<br>
       Nemáš ještě přístup? Napiš adminovi, aby tě přidal.
     </div>
   `;
@@ -1389,11 +1389,11 @@ function renderLoginCode() {
 
     <div style="background: var(--paper-translucent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1.5px solid var(--ink); border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);">
       <div class="form-group" style="margin-bottom: 12px;">
-        <label style="font-size: 14px; margin-bottom: 8px;">Šestimístný kód z e-mailu</label>
+        <label style="font-size: 14px; margin-bottom: 8px;">Kód z e-mailu</label>
         <input type="text" id="login-code" placeholder="123456"
-          autocomplete="one-time-code" inputmode="numeric" maxlength="6"
-          style="width: 100%; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; font-family: inherit; font-size: 26px; letter-spacing: 10px; text-align: center;"
-          oninput="this.value = this.value.replace(/[^0-9]/g,''); if(this.value.length===6) verifyLoginCode();"
+          autocomplete="one-time-code" inputmode="numeric" maxlength="8"
+          style="width: 100%; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; font-family: inherit; font-size: 24px; letter-spacing: 8px; text-align: center;"
+          oninput="this.value = this.value.replace(/[^0-9]/g,''); maybeVerifyCode(this);"
           onkeydown="if(event.key==='Enter') verifyLoginCode()">
       </div>
       <button class="btn btn-primary" style="width: 100%;" id="login-verify-btn" onclick="verifyLoginCode()">
@@ -1442,6 +1442,18 @@ async function sendLoginCode() {
   setTimeout(() => { const c = document.getElementById('login-code'); if (c) c.focus(); }, 50);
 }
 
+// Supabase umi kod ruzne dlouhy (6 az 8 cislic). Po dopsani chvili pockame
+// a pak prihlaseni spustime samo - at clovek nemusi nic mackat.
+function maybeVerifyCode(input) {
+  clearTimeout(maybeVerifyCode._timer);
+  const value = input.value;
+  if (value.length < 6) return;
+  if (value.length >= 8) { verifyLoginCode(); return; }
+  maybeVerifyCode._timer = setTimeout(() => {
+    if (input.value === value) verifyLoginCode();
+  }, 700);
+}
+
 function backToLoginEmail() {
   state.ui.authStep = 'email';
   render();
@@ -1452,8 +1464,8 @@ async function verifyLoginCode() {
   const input = document.getElementById('login-code');
   const code = (input.value || '').trim();
 
-  if (code.length !== 6) {
-    showLoginError('Kód má šest číslic');
+  if (code.length < 6) {
+    showLoginError('Opiš celý kód z e-mailu');
     return;
   }
 
