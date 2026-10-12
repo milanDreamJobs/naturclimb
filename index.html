@@ -848,6 +848,7 @@ async function loadAllData() {
       startDatetime: e.start_datetime, endDatetime: e.end_datetime,
       venue: e.venue,
       priceAccommodation: e.price_accommodation || 0,
+      priceAccommodationReduced: e.price_accommodation_reduced || 0,
       beer1Name: e.beer1_name || '', beer1Price: e.beer1_price || 0,
       beer2Name: e.beer2_name || '', beer2Price: e.beer2_price || 0,
       status: e.status || 'open', createdAt: e.created_at
@@ -861,6 +862,7 @@ async function loadAllData() {
       id: r.id, eventId: r.event_id, memberId: r.member_id,
       beer1Count: r.beer1_count || 0, beer2Count: r.beer2_count || 0,
       nights: r.nights || null,
+      nightsReduced: r.nights_reduced || 0,
       arrivalDatetime: r.arrival_datetime,
       updatedAt: r.updated_at,
       createdAt: r.created_at
@@ -1017,6 +1019,7 @@ async function saveEvent(event) {
     start_datetime: event.startDatetime, end_datetime: event.endDatetime,
     venue: event.venue,
     price_accommodation: event.priceAccommodation || 0,
+    price_accommodation_reduced: event.priceAccommodationReduced || 0,
     beer1_name: event.beer1Name || '', beer1_price: event.beer1Price || 0,
     beer2_name: event.beer2Name || '', beer2_price: event.beer2Price || 0,
     status: event.status || 'open'
@@ -1189,10 +1192,15 @@ function isDeclined(trainingId, memberId) {
 }
 
 function isPastDeadline(training) {
-  // Pro člena: uzávěrka je v 21:00 dne tréninku
-  // Po tomto čase se nemůže přihlašovat/odhlašovat
+  // Uzaverka pro clena: lezecky trenink ve 21:00 dne treninku,
+  // sauna az ve 23:50 (chodi se na ni i na posledni chvili).
   const t = new Date(training.datetime);
-  const deadline = new Date(t.getFullYear(), t.getMonth(), t.getDate(), 21, 0, 0);
+  const sauna = isSaunaTraining(training);
+  const deadline = new Date(
+    t.getFullYear(), t.getMonth(), t.getDate(),
+    sauna ? 23 : 21,
+    sauna ? 50 : 0, 0
+  );
   return new Date() > deadline;
 }
 
@@ -1371,7 +1379,7 @@ function renderLogin() {
     </div>
 
     <div style="margin-top: 24px; text-align: center; font-size: 13px; color: var(--ink-soft);">
-      Na e-mail ti přijde přihlašovací kód.<br>
+      Na e-mail ti přijde osmimístný kód.<br>
       Nemáš ještě přístup? Napiš adminovi, aby tě přidal.
     </div>
   `;
@@ -1389,7 +1397,7 @@ function renderLoginCode() {
 
     <div style="background: var(--paper-translucent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1.5px solid var(--ink); border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);">
       <div class="form-group" style="margin-bottom: 12px;">
-        <label style="font-size: 14px; margin-bottom: 8px;">Kód z e-mailu</label>
+        <label style="font-size: 14px; margin-bottom: 8px;">Osmimístný kód z e-mailu</label>
         <input type="text" id="login-code" placeholder="123456"
           autocomplete="one-time-code" inputmode="numeric" maxlength="8"
           style="width: 100%; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; font-family: inherit; font-size: 24px; letter-spacing: 8px; text-align: center;"
@@ -1442,16 +1450,13 @@ async function sendLoginCode() {
   setTimeout(() => { const c = document.getElementById('login-code'); if (c) c.focus(); }, 50);
 }
 
-// Supabase umi kod ruzne dlouhy (6 az 8 cislic). Po dopsani chvili pockame
-// a pak prihlaseni spustime samo - at clovek nemusi nic mackat.
+// Prihlaseni spustime samo az po dopsani CELEHO kodu (8 cislic).
+// Drive se odesilalo uz po sesti - kdo psal rucne, nikdy nedopsal
+// a dostal chybu, i kdyz mel kod spravny.
+const LOGIN_CODE_LENGTH = 8;
+
 function maybeVerifyCode(input) {
-  clearTimeout(maybeVerifyCode._timer);
-  const value = input.value;
-  if (value.length < 6) return;
-  if (value.length >= 8) { verifyLoginCode(); return; }
-  maybeVerifyCode._timer = setTimeout(() => {
-    if (input.value === value) verifyLoginCode();
-  }, 700);
+  if (input.value.length >= LOGIN_CODE_LENGTH) verifyLoginCode();
 }
 
 function backToLoginEmail() {
@@ -1464,8 +1469,8 @@ async function verifyLoginCode() {
   const input = document.getElementById('login-code');
   const code = (input.value || '').trim();
 
-  if (code.length < 6) {
-    showLoginError('Opiš celý kód z e-mailu');
+  if (code.length < LOGIN_CODE_LENGTH) {
+    showLoginError(`Kód má ${LOGIN_CODE_LENGTH} číslic – opiš ho celý`);
     return;
   }
 
@@ -1484,8 +1489,8 @@ async function verifyLoginCode() {
 
   if (error) {
     console.error('verifyOtp:', error);
-    showLoginError('Kód nesedí nebo už vypršel. Nech si poslat nový.');
-    if (input) { input.value = ''; input.focus(); }
+    showLoginError('Kód nesedí nebo už vypršel. Zkontroluj ho, nebo si nech poslat nový.');
+    if (input) { input.focus(); input.select(); }
     return;
   }
 
@@ -1823,6 +1828,13 @@ function openEventForm(editId) {
       <label>Cena ubytování za noc (Kč / z konta)</label>
       <input type="number" id="ev-acc" placeholder="300" min="0" value="${editing ? editing.priceAccommodation : ''}">
     </div>
+    <div class="form-group">
+      <label>Zvýhodněná cena za noc (Kč)</label>
+      <input type="number" id="ev-acc-red" placeholder="150" min="0" value="${editing && editing.priceAccommodationReduced ? editing.priceAccommodationReduced : ''}">
+      <div style="font-size: 12px; color: var(--ink-soft); margin-top: 4px;">
+        Pro děti nebo pro ty, co spí ve vlastním stanu. Nech prázdné, pokud se u téhle akce nerozlišuje.
+      </div>
+    </div>
     <div class="section-title" style="margin: 16px 0 8px;">Piva</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
       <div class="form-group" style="margin:0;"><label>Název piva 1</label><input type="text" id="ev-b1name" placeholder="Kozel 10°" value="${editing ? editing.beer1Name : ''}"></div>
@@ -1847,6 +1859,7 @@ async function saveEventForm(editId) {
   const start = document.getElementById('ev-start').value;
   const end = document.getElementById('ev-end').value;
   const acc = parseInt(document.getElementById('ev-acc').value) || 0;
+  const accRed = parseInt(document.getElementById('ev-acc-red').value) || 0;
   const b1name = document.getElementById('ev-b1name').value.trim();
   const b1price = parseInt(document.getElementById('ev-b1price').value) || 0;
   const b2name = document.getElementById('ev-b2name').value.trim();
@@ -1856,9 +1869,9 @@ async function saveEventForm(editId) {
   let event;
   if (editId) {
     event = getEvent(editId);
-    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price });
+    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price });
   } else {
-    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price, status: 'open', createdAt: new Date().toISOString() };
+    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price, status: 'open', createdAt: new Date().toISOString() };
     state.events.push(event);
   }
   await saveEvent(event);
@@ -1908,12 +1921,14 @@ function openEventDetail(eventId) {
       const updatedBadge = r.updatedAt && r.updatedAt !== r.createdAt
         ? `<span style="font-size:10px;background:#fff3cd;color:#856404;padding:2px 6px;border-radius:10px;margin-left:4px;">Upraveno ${new Date(r.updatedAt).toLocaleString('cs-CZ',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}</span>`
         : '';
-      const total = rNights*e.priceAccommodation + (r.beer1Count||0)*e.beer1Price + (r.beer2Count||0)*e.beer2Price;
+      const rNightsRed = r.nightsReduced || 0;
+      const total = rNights*e.priceAccommodation + rNightsRed*(e.priceAccommodationReduced||0)
+                  + (r.beer1Count||0)*e.beer1Price + (r.beer2Count||0)*e.beer2Price;
       return `<li class="attendee" style="align-items:flex-start;padding:10px 0;">
         <div class="member-avatar" style="margin-top:2px;">${getInitials(m.name)}</div>
         <div style="flex:1;">
           <div class="attendee-name">${m.name}${updatedBadge}</div>
-          <div style="font-size:12px;color:var(--ink-soft);">${rNights} nocí · ${[beers,arr].filter(Boolean).join(' · ')}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">${rNights} nocí${rNightsRed>0?` + ${rNightsRed} zvýhodněných`:''} · ${[beers,arr].filter(Boolean).join(' · ')}</div>
           <div style="font-size:12px;font-weight:600;color:var(--primary);margin-top:2px;">Celkem: ${total} Kč</div>
         </div>
         ${e.status !== 'settled' ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
@@ -1935,6 +1950,8 @@ function adminEditEventReg(eventId, memberId) {
   const m = getMember(memberId); if (!m) return;
   const defaultNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
   const nights = reg.nights ?? defaultNights;
+  const nightsRed = reg.nightsReduced || 0;
+  const maRedukovanou = (e.priceAccommodationReduced || 0) > 0;
   const b1 = reg.beer1Count||0, b2 = reg.beer2Count||0;
 
   const html = `
@@ -1953,6 +1970,17 @@ function adminEditEventReg(eventId, memberId) {
         <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-total">${nights*e.priceAccommodation}</span> Kč</span>
       </div>
     </div>
+    ${maRedukovanou ? `
+    <div class="form-group">
+      <label>🧒 Zvýhodněné noci – ${e.priceAccommodationReduced} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjNightsRed(-1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="nights-red-cnt" data-count="${nightsRed}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${nightsRed}</span>
+        <button onclick="adjNightsRed(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-red-total">${nightsRed*e.priceAccommodationReduced}</span> Kč</span>
+      </div>
+    </div>
+    ` : ''}
     ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
     ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
     <div class="form-actions">
@@ -1969,6 +1997,7 @@ async function adminSaveEventReg(eventId, memberId) {
   reg.beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
   reg.beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
   reg.nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
+  reg.nightsReduced = parseInt(document.getElementById('nights-red-cnt')?.dataset.count||'0');
   reg.updatedAt = new Date().toISOString();
   await saveEventRegistration_db(reg);
   closeModal();
@@ -1985,14 +2014,17 @@ async function settleEvent(eventId) {
   let count = 0;
   for (const reg of regs) {
     const nights = reg.nights ?? defaultNights;  // použij individuální počet nocí
+    const nightsRed = reg.nightsReduced || 0;
     const accCost = nights * e.priceAccommodation;
+    const accRedCost = nightsRed * (e.priceAccommodationReduced || 0);
     const beer1Cost = (reg.beer1Count||0) * e.beer1Price;
     const beer2Cost = (reg.beer2Count||0) * e.beer2Price;
-    const total = accCost + beer1Cost + beer2Cost;
+    const total = accCost + accRedCost + beer1Cost + beer2Cost;
     if (total === 0) { count++; continue; }
     const desc = [
       `Akce: ${e.name}`,
       accCost>0?`ubyt. ${nights} nocí × ${e.priceAccommodation} Kč = ${accCost} Kč`:'',
+      accRedCost>0?`zvýhodněné ${nightsRed} nocí × ${e.priceAccommodationReduced} Kč = ${accRedCost} Kč`:'',
       beer1Cost>0?`${reg.beer1Count}× ${e.beer1Name} ${beer1Cost} Kč`:'',
       beer2Cost>0?`${reg.beer2Count}× ${e.beer2Name} ${beer2Cost} Kč`:''
     ].filter(Boolean).join(', ');
@@ -2067,6 +2099,8 @@ function openEventRegistration(eventId) {
   // Kdyz clovek jeste prijezd nezadal, nabidneme zacatek akce (ne dnesek).
   const arrVal = myReg && myReg.arrivalDatetime ? toLocalInput(myReg.arrivalDatetime) : toLocalInput(e.startDatetime);
   const defaultNights = myReg?.nights ?? maxNights;
+  const defaultNightsRed = myReg?.nightsReduced ?? 0;
+  const maRedukovanou = (e.priceAccommodationReduced || 0) > 0;
 
   const html = `
     <div class="modal-handle"></div>
@@ -2090,8 +2124,21 @@ function openEventRegistration(eventId) {
         <button onclick="adjNights(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
         <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-total">${defaultNights*e.priceAccommodation}</span> Kč z konta</span>
       </div>
-      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Výchozí: ${maxNights} nocí (délka akce). Uprav pokud přijedeš/odjedeš dříve nebo bereš děti.</div>
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Výchozí: ${maxNights} nocí (délka akce). Uprav, pokud přijedeš nebo odjedeš dřív.</div>
     </div>
+
+    ${maRedukovanou ? `
+    <div class="form-group">
+      <label>🧒 Zvýhodněné noci – ${e.priceAccommodationReduced} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjNightsRed(-1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="nights-red-cnt" data-count="${defaultNightsRed}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${defaultNightsRed}</span>
+        <button onclick="adjNightsRed(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-red-total">${defaultNightsRed*e.priceAccommodationReduced}</span> Kč z konta</span>
+      </div>
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Za děti nebo za noc ve vlastním stanu. Počítá se po nocích: dvě děti na dvě noci = 4.</div>
+    </div>
+    ` : ''}
 
     ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
     ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
@@ -2105,6 +2152,27 @@ function openEventRegistration(eventId) {
   openModal(html);
 }
 
+function adjNightsRed(delta) {
+  const el = document.getElementById('nights-red-cnt');
+  if (!el) return;
+  let count = parseInt(el.dataset.count || '0') + delta;
+  if (count < 0) count = 0;
+  el.dataset.count = count;
+  el.textContent = count;
+
+  const totalEl = document.getElementById('acc-red-total');
+  const ev = getEventFromRegForm();
+  if (totalEl && ev) totalEl.textContent = count * (ev.priceAccommodationReduced || 0);
+}
+
+// Akci k prave otevrene prihlasce poznáme z tlacitka Ulozit
+// (vlastni prihlaska i adminska uprava ciziho zaznamu).
+function getEventFromRegForm() {
+  const btn = document.querySelector('[onclick*="doSaveEventReg"], [onclick*="adminSaveEventReg"]');
+  const eventId = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+  return eventId ? getEvent(eventId) : null;
+}
+
 function adjNights(delta) {
   const el = document.getElementById('nights-cnt');
   if (!el) return;
@@ -2114,15 +2182,8 @@ function adjNights(delta) {
   el.textContent = count;
   // Update accommodation total
   const totalEl = document.getElementById('acc-total');
-  if (totalEl) {
-    // Find price from state - get eventId from save button
-    const btn = document.querySelector('[onclick*="doSaveEventReg"]');
-    const eventId = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
-    if (eventId) {
-      const ev = getEvent(eventId);
-      if (ev) totalEl.textContent = count * ev.priceAccommodation;
-    }
-  }
+  const ev = getEventFromRegForm();
+  if (totalEl && ev) totalEl.textContent = count * ev.priceAccommodation;
 }
 
 function autoCalcNights(endDatetimeISO) {
@@ -2155,6 +2216,7 @@ async function doSaveEventReg(eventId) {
   const beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
   const beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
   const nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
+  const nightsReduced = parseInt(document.getElementById('nights-red-cnt')?.dataset.count||'0');
   const arrivalVal = document.getElementById('ev-arrival').value;
   const now = new Date().toISOString();
 
@@ -2162,12 +2224,13 @@ async function doSaveEventReg(eventId) {
   if (myReg) {
     myReg.beer1Count = beer1Count; myReg.beer2Count = beer2Count;
     myReg.nights = nights;
+    myReg.nightsReduced = nightsReduced;
     myReg.arrivalDatetime = arrivalVal ? new Date(arrivalVal).toISOString() : null;
     myReg.updatedAt = now;
   } else {
     myReg = {
       id: genId(), eventId, memberId: state.currentUserId,
-      beer1Count, beer2Count, nights,
+      beer1Count, beer2Count, nights, nightsReduced,
       arrivalDatetime: arrivalVal ? new Date(arrivalVal).toISOString() : null,
       updatedAt: now, createdAt: now
     };
@@ -2184,6 +2247,7 @@ async function saveEventRegistration_db(reg) {
     id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
     beer1_count: reg.beer1Count||0, beer2_count: reg.beer2Count||0,
     nights: reg.nights || null,
+    nights_reduced: reg.nightsReduced || 0,
     arrival_datetime: reg.arrivalDatetime||null,
     updated_at: new Date().toISOString()
   });
@@ -2209,7 +2273,7 @@ function showEventAttendees(eventId) {
       const m = getMember(r.memberId); if (!m) return '';
       const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
       const arr = r.arrivalDatetime?`🕐 ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
-      return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,arr].filter(Boolean).join(' · ')}</div></div></li>`;
+      return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,nocRed,arr].filter(Boolean).join(' · ')}</div></div></li>`;
     }).join('')}</ul>`}
   `;
   openModal(html);
@@ -3035,29 +3099,47 @@ function renderAdminTrainingItem(t) {
   `;
 }
 
+// Sauna se generuje automaticky a ma vlastni pravidla - pozname ji podle mista.
+function isSaunaTraining(training) {
+  return !!(training && training.venue && training.venue.toLowerCase().includes('sauna'));
+}
+
+// Nejblizsi pristi uterek v 18:00 (dnesni uterek se pocita jen pred 18:00).
+function nextTuesday() {
+  const d = new Date();
+  d.setHours(18, 0, 0, 0);
+  let daysToTuesday = (2 - d.getDay() + 7) % 7;
+  if (daysToTuesday === 0 && new Date() >= d) daysToTuesday = 7;
+  d.setDate(d.getDate() + daysToTuesday);
+  return d;
+}
+
 function openTrainingForm(editId) {
   const editing = editId ? getTraining(editId) : null;
 
-  // Smart prefill: pokud editujeme, použij datum tréninku.
-  // Pokud vytváříme nový, najdi nejnovější trénink (i v minulosti) a přidej 7 dní.
-  // Pokud žádný neexistuje, použij příští úterý 18:00.
+  // Predvyplneni data:
+  //  - editace: datum toho treninku
+  //  - novy: posledni LEZECKY trenink + 7 dni (sauny se generuji samy kazde
+  //    pondeli, takze by jinak prebily radu uterku)
+  //  - kdyz by vyslo datum v minulosti nebo zadny lezecky trenink neni:
+  //    nejblizsi pristi uterek v 18:00
   let prefillDate;
   if (editing) {
     prefillDate = new Date(editing.datetime);
-  } else if (state.trainings.length > 0) {
-    // Vezmi nejnovější trénink (podle data, ne podle vytvoření)
-    const sorted = [...state.trainings].sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
-    const latest = new Date(sorted[0].datetime);
-    prefillDate = new Date(latest);
-    prefillDate.setDate(prefillDate.getDate() + 7); // +1 týden
   } else {
-    // Žádný trénink ještě nebyl: najdi příští úterý 18:00
-    prefillDate = new Date();
-    prefillDate.setHours(18, 0, 0, 0);
-    const dayOfWeek = prefillDate.getDay(); // 0=Ne, 1=Po, 2=Út, ...
-    let daysToTuesday = (2 - dayOfWeek + 7) % 7;
-    if (daysToTuesday === 0 && new Date().getHours() >= 18) daysToTuesday = 7; // dnes je úterý po 18h → příští úterý
-    prefillDate.setDate(prefillDate.getDate() + daysToTuesday);
+    const lezecke = state.trainings
+      .filter(t => !isSaunaTraining(t))
+      .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+
+    if (lezecke.length > 0) {
+      prefillDate = new Date(lezecke[0].datetime);
+      prefillDate.setDate(prefillDate.getDate() + 7);
+    }
+
+    // Zadny lezecky trenink, nebo by nove datum vyslo v minulosti
+    if (!prefillDate || prefillDate < new Date()) {
+      prefillDate = nextTuesday();
+    }
   }
 
   // Převést na local datetime string ve formátu YYYY-MM-DDTHH:MM
