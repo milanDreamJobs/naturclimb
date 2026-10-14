@@ -878,6 +878,7 @@ async function loadAllData() {
       beer1Count: r.beer1_count || 0, beer2Count: r.beer2_count || 0,
       nights: r.nights || null,
       nightsReduced: r.nights_reduced || 0,
+      settledAt: r.settled_at, settledAmount: r.settled_amount,
       arrivalDatetime: r.arrival_datetime,
       updatedAt: r.updated_at,
       createdAt: r.created_at
@@ -2265,9 +2266,10 @@ function openEventDetail(eventId) {
         <div style="flex:1;">
           <div class="attendee-name">${m.name}${updatedBadge}</div>
           <div style="font-size:12px;color:var(--ink-soft);">${rNights} nocí${rNightsRed>0?` + ${rNightsRed} zvýhodněných`:''} · ${[beers,arr].filter(Boolean).join(' · ')}</div>
+          ${r.settledAt ? `<div style="font-size:12px;color:var(--primary);font-weight:600;margin-top:2px;">🧾 Vyúčtoval/a se sám/sama · ${r.settledAmount || 0} Kč</div>` : ''}
           <div style="font-size:12px;font-weight:600;color:var(--primary);margin-top:2px;">Celkem: ${total} Kč</div>
         </div>
-        ${e.status !== 'settled' ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
+        ${e.status !== 'settled' && !r.settledAt ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
       </li>`;
     }).join('')}</ul>`}
     <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px;margin-top:12px;font-size:13px;">
@@ -2344,8 +2346,15 @@ async function adminSaveEventReg(eventId, memberId) {
 async function settleEvent(eventId) {
   const e = getEvent(eventId);
   if (!e || e.status === 'settled') return;
-  if (!confirm('Zúčtovat akci? Odečtou se náklady z kont přihlášených.')) return;
-  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const vsechny = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const regs = vsechny.filter(r => !r.settledAt);   // kdo se vyuctoval sam, uz zaplatil
+  const jizVyuctovano = vsechny.length - regs.length;
+
+  if (!confirm(
+    `Zúčtovat akci?\n\n` +
+    `${regs.length} lidem se odečtou náklady z konta.` +
+    (jizVyuctovano > 0 ? `\n${jizVyuctovano} se už vyúčtovalo sám/sama – těm se nic neodečte.` : '')
+  )) return;
   const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
   let count = 0;
   for (const reg of regs) {
@@ -2370,7 +2379,9 @@ async function settleEvent(eventId) {
   e.status = 'settled';
   await saveEvent(e);
   closeModal();
-  showToast(`✓ Akce zúčtována: ${count} členů`);
+  showToast(jizVyuctovano > 0
+    ? `✓ Zúčtováno ${count} členů (${jizVyuctovano} už vyúčtováno dřív)`
+    : `✓ Akce zúčtována: ${count} členů`);
   render();
 }
 
@@ -2379,6 +2390,181 @@ function renderMemberEvents() {
   const allEvents = [...state.events].sort((a,b) => new Date(a.startDatetime)-new Date(b.startDatetime));
   if (allEvents.length === 0) return `<div class="empty-msg"><div class="icon">🏕️</div><div>Zatím žádné akce</div></div>`;
   return allEvents.map(e => renderEventCard(e)).join('');
+}
+
+// ============================================
+// VYUCTOVANI AKCE CLENEM
+// ============================================
+// Po skonceni akce si kazdy sam potvrdi, co doopravdy spotreboval.
+// Castku prepocita databaze z cen akce; tady jen ukazujeme nahled.
+
+function spocitejUtratu(e, noci, nociZvyh, pivo1, pivo2) {
+  return noci * (e.priceAccommodation || 0)
+       + nociZvyh * (e.priceAccommodationReduced || 0)
+       + pivo1 * (e.beer1Price || 0)
+       + pivo2 * (e.beer2Price || 0);
+}
+
+function openEventSettlement(eventId) {
+  const e = getEvent(eventId); if (!e) return;
+  const myReg = getMyEventReg(eventId);
+  if (!myReg) { showToast('Nejsi na tuhle akci přihlášen/a'); return; }
+  if (myReg.settledAt) { showToast('Tuhle akci už máš vyúčtovanou'); return; }
+
+  const maZvyhodnenou = (e.priceAccommodationReduced || 0) > 0;
+  const n  = myReg.nights ?? Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  const nz = myReg.nightsReduced || 0;
+  const b1 = myReg.beer1Count || 0;
+  const b2 = myReg.beer2Count || 0;
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">🧾 Vyúčtování akce</div>
+      <div class="modal-subtitle">${e.name} · ${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)}</div>
+    </div>
+
+    <div style="background:rgba(212,115,26,0.10);border:1.5px solid rgba(212,115,26,0.3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;">
+      Projdi čísla a oprav je podle skutečnosti – kolik nocí jsi doopravdy přespal/a
+      a kolik toho vypil/a. Po potvrzení se částka <strong>odečte z tvého konta</strong>
+      a už to nepůjde změnit (pak už jen přes admina).
+    </div>
+
+    <div class="form-group">
+      <label>🌙 Počet nocí – ${e.priceAccommodation} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjSettle('set-nights', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="set-nights" data-count="${n}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${n}</span>
+        <button onclick="adjSettle('set-nights', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+      </div>
+    </div>
+
+    ${maZvyhodnenou ? `
+    <div class="form-group">
+      <label>🧒 Zvýhodněné noci – ${e.priceAccommodationReduced} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjSettle('set-nights-red', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="set-nights-red" data-count="${nz}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${nz}</span>
+        <button onclick="adjSettle('set-nights-red', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+      </div>
+    </div>` : ''}
+
+    ${e.beer1Name ? `
+    <div class="form-group">
+      <label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjSettle('set-b1', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="set-b1" data-count="${b1}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span>
+        <button onclick="adjSettle('set-b1', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+      </div>
+    </div>` : ''}
+
+    ${e.beer2Name ? `
+    <div class="form-group">
+      <label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjSettle('set-b2', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="set-b2" data-count="${b2}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span>
+        <button onclick="adjSettle('set-b2', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+      </div>
+    </div>` : ''}
+
+    <div id="settle-summary" style="background:rgba(15,32,39,0.05);border-radius:10px;padding:14px;margin:14px 0;">
+      <div style="font-size:13px;color:var(--ink-soft);">Celkem k odečtení</div>
+      <div id="settle-total" style="font-size:26px;font-weight:800;">${spocitejUtratu(e, n, nz, b1, b2)} Kč</div>
+      <div id="settle-breakdown" style="font-size:12px;color:var(--ink-soft);margin-top:4px;"></div>
+    </div>
+
+    <div class="form-actions" style="flex-direction:column;gap:8px;">
+      <button class="btn btn-primary" style="width:100%;" id="settle-btn"
+        onclick="potvrditVyuctovani('${e.id}')">Potvrdit a odečíst z konta</button>
+      <button class="btn btn-secondary" style="width:100%;" onclick="closeModal()">Ještě ne, zavřít</button>
+    </div>
+  `);
+  prepocitejVyuctovani();
+}
+
+function adjSettle(id, delta) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let count = parseInt(el.dataset.count || '0') + delta;
+  if (count < 0) count = 0;
+  el.dataset.count = count;
+  el.textContent = count;
+  prepocitejVyuctovani();
+}
+
+function cteniVyuctovani() {
+  const dej = id => parseInt(document.getElementById(id)?.dataset.count || '0');
+  return {
+    noci: dej('set-nights'),
+    nociZvyh: dej('set-nights-red'),
+    pivo1: dej('set-b1'),
+    pivo2: dej('set-b2')
+  };
+}
+
+function prepocitejVyuctovani() {
+  const e = getEventFromSettleForm();
+  if (!e) return;
+  const v = cteniVyuctovani();
+  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pivo1, v.pivo2);
+
+  const totalEl = document.getElementById('settle-total');
+  if (totalEl) totalEl.textContent = celkem + ' Kč';
+
+  const rozpis = [
+    v.noci > 0 ? `${v.noci}× nocleh ${e.priceAccommodation} Kč` : '',
+    v.nociZvyh > 0 ? `${v.nociZvyh}× zvýhodněná noc ${e.priceAccommodationReduced} Kč` : '',
+    v.pivo1 > 0 ? `${v.pivo1}× ${e.beer1Name} ${e.beer1Price} Kč` : '',
+    v.pivo2 > 0 ? `${v.pivo2}× ${e.beer2Name} ${e.beer2Price} Kč` : ''
+  ].filter(Boolean).join(' + ');
+  const rozpisEl = document.getElementById('settle-breakdown');
+  if (rozpisEl) rozpisEl.textContent = rozpis || 'Nic jsi nespotřeboval/a – odečte se nula.';
+
+  const btn = document.getElementById('settle-btn');
+  if (btn) btn.textContent = celkem > 0
+    ? `Potvrdit a odečíst ${celkem} Kč z konta`
+    : 'Potvrdit – nic neplatím';
+}
+
+function getEventFromSettleForm() {
+  const btn = document.querySelector('[onclick*="potvrditVyuctovani"]');
+  const id = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+  return id ? getEvent(id) : null;
+}
+
+async function potvrditVyuctovani(eventId) {
+  const v = cteniVyuctovani();
+  const e = getEvent(eventId);
+  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pivo1, v.pivo2);
+
+  if (!confirm(celkem > 0
+      ? `Opravdu potvrdit? Z konta se ti odečte ${celkem} Kč a změnit to půjde už jen přes admina.`
+      : 'Opravdu potvrdit, že nic neplatíš?')) return;
+
+  const btn = document.getElementById('settle-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Potvrzuji…'; }
+
+  const { data, error } = await db.rpc('settle_my_event_registration', {
+    p_event_id: eventId,
+    p_nights: v.noci,
+    p_nights_reduced: v.nociZvyh,
+    p_beer1: v.pivo1,
+    p_beer2: v.pivo2
+  });
+
+  if (error) {
+    if (btn) { btn.disabled = false; prepocitejVyuctovani(); }
+    showDbError(error, 'Vyúčtování se nepovedlo');
+    return;
+  }
+
+  await loadAllData();
+  closeModal();
+  showToast(data > 0 ? `✓ Vyúčtováno, odečteno ${data} Kč` : '✓ Vyúčtováno, neplatíš nic');
+  render();
 }
 
 function renderEventCard(e) {
@@ -2405,7 +2591,24 @@ function renderEventCard(e) {
         <div style="background:rgba(26,95,90,0.08);border:1.5px solid rgba(26,95,90,0.25);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
           <div style="font-weight:700;color:var(--primary);margin-bottom:4px;">✓ Přihlášen/a</div>
           <div style="font-size:13px;color:var(--ink-soft);">${[e.beer1Name&&myReg.beer1Count>0?`${myReg.beer1Count}× ${e.beer1Name}`:'', e.beer2Name&&myReg.beer2Count>0?`${myReg.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(' · ')}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
-          ${!isPast?`<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>`:''}
+          ${!isPast ? `
+            <button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>
+          ` : myReg.settledAt ? `
+            <div style="margin-top:8px;font-size:13px;font-weight:600;color:var(--primary);">
+              🧾 Vyúčtováno · odečteno ${myReg.settledAmount || 0} Kč
+            </div>
+          ` : e.status === 'settled' ? `
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-soft);">
+              Akci zúčtoval admin.
+            </div>
+          ` : `
+            <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="openEventSettlement('${e.id}')">
+              🧾 Vyúčtovat se – kolik jsem opravdu utratil/a
+            </button>
+            <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;text-align:center;">
+              Akce skončila. Zkontroluj čísla a potvrď, ať se ti odečte správná částka.
+            </div>
+          `}
         </div>
       `:!isPast?`<button class="btn btn-primary" style="width:100%;margin-bottom:8px;" onclick="openEventRegistration('${e.id}')">✓ Přihlásit se na akci</button>`:''}
       <div style="display:flex;gap:8px;margin-bottom:8px;">
