@@ -5,10 +5,11 @@
 -- Predpoklad: spustene kroky 3 az 8.
 --
 -- Jak to funguje:
---   Po skonceni akce clovek otevre stejny formular jako u prihlasky,
---   upravi, co doopravdy snedl a vypil, a potvrdi. Castku spocita
---   databaze z ulozenych cen akce (ne z toho, co posle prohlizec),
---   zalozi transakci a oznaci prihlasku za vyuctovanou.
+--   Clovek kdykoli (klidne jeste behem akce, kdyz odjizdi driv)
+--   otevre stejny formular jako u prihlasky, upravi, co doopravdy
+--   snedl a vypil, a potvrdi. Castku spocita databaze z ulozenych
+--   cen akce (ne z toho, co posle prohlizec), zalozi transakci
+--   a oznaci prihlasku za vyuctovanou.
 --
 --   Admin pak pri zuctovani akce preskoci ty, kdo se vyuctovali sami,
 --   takze se nikomu neodecte dvakrat.
@@ -63,10 +64,6 @@ begin
   if e.status = 'settled' then
     raise exception 'Akci uz zuctoval admin';
   end if;
-  if now() < e.end_datetime then
-    raise exception 'Akce jeste neskoncila';
-  end if;
-
   select * into r from public.event_registrations
    where event_id = p_event_id and member_id = mid;
   if not found then

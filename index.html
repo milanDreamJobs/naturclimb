@@ -2428,7 +2428,8 @@ function openEventSettlement(eventId) {
     <div style="background:rgba(212,115,26,0.10);border:1.5px solid rgba(212,115,26,0.3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;">
       Projdi čísla a oprav je podle skutečnosti – kolik nocí jsi doopravdy přespal/a
       a kolik toho vypil/a. Po potvrzení se částka <strong>odečte z tvého konta</strong>
-      a už to nepůjde změnit (pak už jen přes admina).
+      a přihlášku už nepůjde měnit. Vyúčtuj se, až budeš mít jasno – klidně hned,
+      když odjíždíš dřív než ostatní.
     </div>
 
     <div class="form-group">
@@ -2591,9 +2592,7 @@ function renderEventCard(e) {
         <div style="background:rgba(26,95,90,0.08);border:1.5px solid rgba(26,95,90,0.25);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
           <div style="font-weight:700;color:var(--primary);margin-bottom:4px;">✓ Přihlášen/a</div>
           <div style="font-size:13px;color:var(--ink-soft);">${[e.beer1Name&&myReg.beer1Count>0?`${myReg.beer1Count}× ${e.beer1Name}`:'', e.beer2Name&&myReg.beer2Count>0?`${myReg.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(' · ')}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
-          ${!isPast ? `
-            <button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>
-          ` : myReg.settledAt ? `
+          ${myReg.settledAt ? `
             <div style="margin-top:8px;font-size:13px;font-weight:600;color:var(--primary);">
               🧾 Vyúčtováno · odečteno ${myReg.settledAmount || 0} Kč
             </div>
@@ -2602,11 +2601,14 @@ function renderEventCard(e) {
               Akci zúčtoval admin.
             </div>
           ` : `
+            ${!isPast ? `<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>` : ''}
             <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="openEventSettlement('${e.id}')">
               🧾 Vyúčtovat se – kolik jsem opravdu utratil/a
             </button>
             <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;text-align:center;">
-              Akce skončila. Zkontroluj čísla a potvrď, ať se ti odečte správná částka.
+              ${isPast
+                ? 'Akce skončila. Zkontroluj čísla a potvrď, ať se ti odečte správná částka.'
+                : 'Odjíždíš dřív nebo už víš, kolik jsi utratil/a? Potvrď to rovnou.'}
             </div>
           `}
         </div>
