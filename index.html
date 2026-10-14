@@ -2607,6 +2607,7 @@ function showEventAttendees(eventId) {
       const m = getMember(r.memberId); if (!m) return '';
       const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
       const arr = r.arrivalDatetime?`🕐 ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
+      const nocRed = (r.nightsReduced||0) > 0 ? `🧒 ${r.nightsReduced}× zvýhodněná noc` : '';
       return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,nocRed,arr].filter(Boolean).join(' · ')}</div></div></li>`;
     }).join('')}</ul>`}
   `;
