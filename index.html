@@ -114,6 +114,13 @@
   .member-meta { flex: 1; min-width: 0; }
   .member-name { font-weight: 500; font-size: 15px; }
   .member-email { font-size: 12px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fee-dot {
+    display: inline-block; width: 9px; height: 9px;
+    border-radius: 50%; margin-right: 6px; vertical-align: baseline;
+  }
+  .fee-dot.paid { background: var(--green); }
+  .fee-dot.unpaid { background: var(--accent); }
+
   .admin-badge {
     font-size: 10px; background: var(--secondary); color: white;
     padding: 2px 6px; border-radius: 4px;
@@ -579,6 +586,11 @@
     border: 2px solid transparent;
     transition: all 0.15s ease;
   }
+  .btn-choice.selected {
+    border-color: var(--primary);
+    background: rgba(26, 95, 90, 0.08);
+    box-shadow: inset 0 0 0 1px var(--primary);
+  }
   .btn-choice-nejdu {
     background: #f0f0f0;
     color: #888;
@@ -712,6 +724,7 @@ const state = {
   events: [],
   eventRegistrations: [],
   eventRides: [],
+  paymentClaims: [],
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
@@ -754,7 +767,9 @@ async function loadAllData() {
         clubName: settingsRow.club_name,
         bankAccount: settingsRow.bank_account || '',
         debtLimit: settingsRow.debt_limit ?? -500,
-        creditLimit: settingsRow.credit_limit ?? 500
+        creditLimit: settingsRow.credit_limit ?? 500,
+        feeFull: settingsRow.membership_fee_full ?? 800,
+        feeReduced: settingsRow.membership_fee_reduced ?? 500
       };
     }
 
@@ -868,6 +883,17 @@ async function loadAllData() {
       createdAt: r.created_at
     }));
 
+    // Ohlasene platby (clen vidi sve, admin vsechny)
+    const { data: claimsData, error: pcErr } = await db
+      .from('payment_claims').select('*').order('created_at', { ascending: false });
+    if (pcErr) console.error('❌ PaymentClaims error:', pcErr);
+    state.paymentClaims = (claimsData || []).map(c => ({
+      id: c.id, memberId: c.member_id, amount: c.amount,
+      kind: c.kind, feeType: c.fee_type, year: c.year,
+      status: c.status, note: c.note,
+      createdAt: c.created_at, decidedAt: c.decided_at
+    }));
+
     // Event rides
     const { data: ridesData, error: riErr } = await db
       .from('event_rides').select('*');
@@ -898,6 +924,8 @@ async function saveSetup() {
     id: 1,
     club_name: state.setup.clubName,
     bank_account: state.setup.bankAccount || '',
+    membership_fee_full: state.setup.feeFull ?? 800,
+    membership_fee_reduced: state.setup.feeReduced ?? 500,
     debt_limit: state.setup.debtLimit,
     credit_limit: state.setup.creditLimit,
     is_setup: true,
@@ -1262,7 +1290,9 @@ function getSettings() {
     clubName: 'NaturClimb',
     bankAccount: '',
     debtLimit: -500,
-    creditLimit: 500
+    creditLimit: 500,
+    feeFull: 800,
+    feeReduced: 500
   };
 }
 
@@ -1569,6 +1599,297 @@ async function logout() {
 }
 
 // ============================================
+// PLATBY NA ODDILOVY UCET A ROCNI PRISPEVKY
+// ============================================
+
+// Cesky ucet (predcisli-cislo/kod banky) -> IBAN, kvuli QR platbe.
+function ibanZCzUctu(ucet) {
+  const m = String(ucet || '').replace(/\s/g, '').match(/^(?:(\d{1,6})-)?(\d{1,10})\/(\d{4})$/);
+  if (!m) return null;
+  const predcisli = (m[1] || '').padStart(6, '0');
+  const cislo = m[2].padStart(10, '0');
+  const banka = m[3];
+  // kontrolni cislice: BBAN + "CZ00" prevedeno na cisla, mod 97
+  const bban = banka + predcisli + cislo;
+  const prevod = (bban + '123500').replace(/[A-Z]/g, ch => String(ch.charCodeAt(0) - 55));
+  let zbytek = 0;
+  for (const znak of prevod) zbytek = (zbytek * 10 + Number(znak)) % 97;
+  const kontrola = String(98 - zbytek).padStart(2, '0');
+  return 'CZ' + kontrola + bban;
+}
+
+// Retezec ceske QR platby (SPAYD)
+function spaydRetezec(iban, castka, zprava) {
+  const casti = ['SPD*1.0', 'ACC:' + iban, 'AM:' + Number(castka).toFixed(2), 'CC:CZK'];
+  if (zprava) casti.push('MSG:' + zprava.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 60));
+  return casti.join('*');
+}
+
+// QR knihovnu nacitame az kdyz je opravdu potreba.
+function nactiQrKnihovnu() {
+  if (window.qrcode) return Promise.resolve(true);
+  if (nactiQrKnihovnu._cekani) return nactiQrKnihovnu._cekani;
+  nactiQrKnihovnu._cekani = new Promise(resolve => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+    sc.onload = () => resolve(true);
+    sc.onerror = () => resolve(false);
+    document.head.appendChild(sc);
+  });
+  return nactiQrKnihovnu._cekani;
+}
+
+async function vykresliQr(elementId, text) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const ok = await nactiQrKnihovnu();
+  if (!ok || !window.qrcode) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--ink-soft);">QR kód se nepodařilo načíst – použij číslo účtu.</div>';
+    return;
+  }
+  const qr = window.qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  const svg = el.querySelector('svg');
+  if (svg) { svg.style.width = '190px'; svg.style.height = '190px'; svg.style.background = 'white'; }
+}
+
+function mojeCekajiciPlatba() {
+  return (state.paymentClaims || []).find(c => c.memberId === state.currentUserId && c.status === 'pending');
+}
+
+// Zelený puntík = letos uz dorazil prispevek (nebo jina potvrzena platba
+// aspon ve vysi zvyhodnene sazby).
+function maZaplacenyPrispevek(memberId) {
+  const settings = getSettings();
+  const rok = new Date().getFullYear();
+  const prah = settings.feeReduced ?? 500;
+  return state.transactions.some(t =>
+    t.memberId === memberId &&
+    new Date(t.createdAt).getFullYear() === rok &&
+    (t.type === 'membership_fee' || (t.amount >= prah && t.amount > 0))
+  );
+}
+
+function openPaymentDialog() {
+  const settings = getSettings();
+  const user = getCurrentUser();
+  const cekajici = mojeCekajiciPlatba();
+  const dluh = Math.max(0, -recalcBalance(user.id));
+  const rok = new Date().getFullYear();
+
+  if (cekajici) {
+    openModal(`
+      <div class="modal-handle"></div>
+      <button class="modal-close" onclick="closeModal()">×</button>
+      <div class="modal-header">
+        <div class="modal-title">⏳ Platba čeká na potvrzení</div>
+      </div>
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;">
+        <div style="font-size:22px;font-weight:700;">${cekajici.amount} Kč</div>
+        <div style="font-size:13px;color:var(--ink-soft);margin-top:4px;">
+          ${cekajici.kind === 'membership' ? `Členský příspěvek ${cekajici.year}` : 'Platba na konto'}
+          · ohlášeno ${new Date(cekajici.createdAt).toLocaleDateString('cs-CZ')}
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--ink-soft);">
+        Admin ji potvrdí, až uvidí peníze na účtu. Pak se ti připíše na konto.
+      </p>
+      <div class="form-actions">
+        <button class="btn btn-secondary" onclick="zrusitMojiPlatbu('${cekajici.id}')">Zrušit ohlášení</button>
+        <button class="btn btn-primary" onclick="closeModal()">Rozumím</button>
+      </div>
+    `);
+    return;
+  }
+
+  const ucet = settings.bankAccount || '';
+  const iban = ibanZCzUctu(ucet);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">💸 Zaplatil jsem na oddílový účet</div>
+      <div class="modal-subtitle">Pošli převodem a tady to ohlas – admin platbu potvrdí podle výpisu.</div>
+    </div>
+
+    <div class="form-group">
+      <label>Co platíš?</label>
+      <div id="pay-kind-buttons" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+        <button class="btn-choice" data-kind="membership" data-fee="full" data-amount="${settings.feeFull}"
+          onclick="vyberTypPlatby(this)" style="text-align:left;padding:12px 14px;">
+          🎫 Roční příspěvek – <strong>${settings.feeFull} Kč</strong>
+        </button>
+        <button class="btn-choice" data-kind="membership" data-fee="reduced" data-amount="${settings.feeReduced}"
+          onclick="vyberTypPlatby(this)" style="text-align:left;padding:12px 14px;">
+          🎫 Roční příspěvek zvýhodněný – <strong>${settings.feeReduced} Kč</strong>
+        </button>
+        <button class="btn-choice" data-kind="topup" data-fee="" data-amount="${dluh || ''}"
+          onclick="vyberTypPlatby(this)" style="text-align:left;padding:12px 14px;">
+          💰 Dobití konta${dluh > 0 ? ` – dlužíš ${dluh} Kč` : ''}
+        </button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Částka (Kč)</label>
+      <input type="number" id="pay-amount" min="1" max="100000" inputmode="numeric"
+        placeholder="800" oninput="prekresliQrPlatby()">
+    </div>
+
+    ${ucet ? `
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;text-align:center;">
+        <div id="pay-qr" style="min-height:40px;display:flex;justify-content:center;align-items:center;">
+          <span style="font-size:12px;color:var(--ink-soft);">Vyber částku a naskočí QR kód</span>
+        </div>
+        <div style="margin-top:10px;font-size:14px;font-weight:600;">${ucet}</div>
+        <button class="copy-btn" style="margin-top:6px;" onclick="copyBank(event, '${ucet}')">Kopírovat číslo účtu</button>
+        ${iban ? '' : '<div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">QR kód neumím vytvořit – číslo účtu v nastavení není ve tvaru 123456789/0100.</div>'}
+      </div>
+    ` : `
+      <div style="background:var(--accent-dim);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;">
+        Admin ještě nevyplnil číslo oddílového účtu. Domluv se s ním na platbě.
+      </div>
+    `}
+
+    <div id="pay-error" style="color:var(--warning);font-size:13px;display:none;margin-bottom:8px;text-align:center;"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" id="pay-submit" onclick="odeslatOhlaseniPlatby()">Ohlásit platbu</button>
+    </div>
+  `);
+}
+
+function vyberTypPlatby(btn) {
+  document.querySelectorAll('#pay-kind-buttons .btn-choice').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  const castka = btn.dataset.amount;
+  const vstup = document.getElementById('pay-amount');
+  if (vstup && castka) vstup.value = castka;
+  prekresliQrPlatby();
+}
+
+function prekresliQrPlatby() {
+  const settings = getSettings();
+  const iban = ibanZCzUctu(settings.bankAccount);
+  const castka = parseInt(document.getElementById('pay-amount')?.value || '0');
+  const el = document.getElementById('pay-qr');
+  if (!el) return;
+  if (!iban || !castka || castka <= 0) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Vyber částku a naskočí QR kód</span>';
+    return;
+  }
+  const user = getCurrentUser();
+  vykresliQr('pay-qr', spaydRetezec(iban, castka, (user?.name || '') + ' ' + settings.clubName));
+}
+
+async function odeslatOhlaseniPlatby() {
+  const vybrany = document.querySelector('#pay-kind-buttons .btn-choice.selected');
+  const castka = parseInt(document.getElementById('pay-amount')?.value || '0');
+  const chyba = document.getElementById('pay-error');
+  const ukaz = text => { if (chyba) { chyba.textContent = text; chyba.style.display = 'block'; } };
+
+  if (!vybrany) { ukaz('Vyber, co platíš'); return; }
+  if (!castka || castka <= 0) { ukaz('Zadej částku'); return; }
+  if (castka > 100000) { ukaz('Tak velkou částku radši dohodni s adminem osobně'); return; }
+
+  const btn = document.getElementById('pay-submit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Odesílám…'; }
+
+  const { error } = await db.rpc('claim_payment', {
+    p_amount: castka,
+    p_kind: vybrany.dataset.kind,
+    p_fee_type: vybrany.dataset.fee || null
+  });
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Ohlásit platbu'; }
+  if (error) { showDbError(error, 'Ohlášení se nepovedlo'); return; }
+
+  await nactiPlatby();
+  closeModal();
+  showToast('✓ Platba ohlášena – admin ji potvrdí');
+  render();
+}
+
+async function zrusitMojiPlatbu(claimId) {
+  const { error } = await db.rpc('cancel_my_claim', { p_claim_id: claimId });
+  if (error) { showDbError(error, 'Zrušení se nepovedlo'); return; }
+  await nactiPlatby();
+  closeModal();
+  showToast('Ohlášení zrušeno');
+  render();
+}
+
+async function nactiPlatby() {
+  const { data, error } = await db.from('payment_claims').select('*').order('created_at', { ascending: false });
+  if (error) { console.error('nactiPlatby:', error); return; }
+  state.paymentClaims = (data || []).map(c => ({
+    id: c.id, memberId: c.member_id, amount: c.amount,
+    kind: c.kind, feeType: c.fee_type, year: c.year,
+    status: c.status, note: c.note,
+    createdAt: c.created_at, decidedAt: c.decided_at
+  }));
+}
+
+async function potvrditPlatbu(claimId) {
+  const { error } = await db.rpc('confirm_payment_claim', { p_claim_id: claimId });
+  if (error) { showDbError(error, 'Potvrzení se nepovedlo'); return; }
+  await loadAllData();
+  showToast('✓ Platba potvrzena a připsána');
+  render();
+}
+
+async function zamitnoutPlatbu(claimId) {
+  if (!confirm('Opravdu zamítnout? Člen uvidí, že platba neprošla.')) return;
+  const { error } = await db.rpc('reject_payment_claim', { p_claim_id: claimId, p_note: null });
+  if (error) { showDbError(error, 'Zamítnutí se nepovedlo'); return; }
+  await nactiPlatby();
+  showToast('Platba zamítnuta');
+  render();
+}
+
+function vysvetliPuntik() {
+  const settings = getSettings();
+  showToast(`Zelená = letos dorazil příspěvek (nebo jiná platba aspoň ${settings.feeReduced} Kč). Červená = zatím nic.`);
+}
+
+function renderAdminPayments() {
+  const cekajici = (state.paymentClaims || []).filter(c => c.status === 'pending');
+  if (cekajici.length === 0) return '';
+
+  return `
+    <div class="section-title" style="margin-top: 8px;">💸 Platby k potvrzení (${cekajici.length})</div>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">
+      Potvrď až podle bankovního výpisu – teprve tím se částka připíše na konto.
+    </div>
+    ${cekajici.map(c => {
+      const m = getMember(c.memberId);
+      return `
+        <div class="admin-list-item" style="align-items:flex-start;">
+          <div class="member-avatar" style="margin-top:2px;">${getInitials(m ? m.name : '?')}</div>
+          <div class="info">
+            <div class="title">${m ? m.name : 'Neznámý člen'} · ${c.amount} Kč</div>
+            <div class="subtitle">
+              ${c.kind === 'membership' ? `🎫 Příspěvek ${c.year}${c.feeType === 'reduced' ? ' (zvýhodněný)' : ''}` : '💰 Dobití konta'}
+              · ohlášeno ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="btn btn-primary" style="padding:6px 14px;font-size:13px;"
+                onclick="potvrditPlatbu('${c.id}')">✓ Potvrdit</button>
+              <button class="btn btn-secondary" style="padding:6px 14px;font-size:13px;"
+                onclick="zamitnoutPlatbu('${c.id}')">Zamítnout</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('')}
+  `;
+}
+
+// ============================================
 // MEMBER VIEW
 // ============================================
 function renderMember() {
@@ -1646,6 +1967,19 @@ function renderMember() {
       ` : ''}
       ${warning}
     </div>
+
+    ${(() => {
+      const cekajici = mojeCekajiciPlatba();
+      return cekajici ? `
+        <button class="btn btn-secondary" style="width:100%;margin-bottom:16px;" onclick="openPaymentDialog()">
+          ⏳ ${cekajici.amount} Kč čeká na potvrzení adminem
+        </button>
+      ` : `
+        <button class="btn btn-secondary" style="width:100%;margin-bottom:16px;" onclick="openPaymentDialog()">
+          💸 Zaplatil jsem na oddílový účet
+        </button>
+      `;
+    })()}
 
     <div class="section-title">Nadcházející tréninky</div>
 
@@ -2787,7 +3121,8 @@ function renderHistoryItem(tx) {
     training_charge: '🧗 Trénink',
     training_reward: '🧗 Trénink (odměna)',
     cash_deposit: '💵 Hotovostní vklad',
-    bank_deposit: '🏦 Bankovní vklad',
+    bank_deposit: '🏦 Platba na účet',
+    membership_fee: '🎫 Členský příspěvek',
     cash_withdrawal: '💵 Hotovostní výběr',
     bank_withdrawal: '🏦 Bankovní výběr',
     correction: '✎ Ruční korekce',
@@ -2938,6 +3273,8 @@ function renderAdminDashboard() {
     .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
 
   return `
+    ${renderAdminPayments()}
+
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-label">Členů</div>
@@ -3698,6 +4035,13 @@ function renderAdminMembers() {
     </div>
 
     ${sorted.length > 5 ? `
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+        <span class="fee-dot paid"></span> příspěvek zaplacen
+        <span class="fee-dot unpaid" style="margin-left:10px;"></span> nezaplacen
+        <button onclick="vysvetliPuntik()" title="Co znamená puntík?"
+          style="margin-left:4px;width:18px;height:18px;border-radius:50%;border:1px solid var(--line);background:white;color:var(--ink-soft);font-size:11px;cursor:pointer;line-height:1;">?</button>
+      </div>
+
       <div class="form-group" style="margin-bottom: 12px; position: relative;">
         <input type="search" id="member-search" autocomplete="off"
           placeholder="Hledat člena – jméno nebo email"
@@ -3727,7 +4071,7 @@ function renderAdminMembers() {
           data-search="${escapeAttr(hay)}"${hidden ? ' style="display: none;"' : ''}>
           <div class="member-avatar">${getInitials(m.name)}</div>
           <div class="info">
-            <div class="title">${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''}${m.isSaunaAdmin ? ' <span class="admin-badge" style="background: var(--warning);">SAUNA</span>' : ''} ${badge}</div>
+            <div class="title"><span class="fee-dot ${maZaplacenyPrispevek(m.id) ? 'paid' : 'unpaid'}" title="Členský příspěvek"></span>${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''}${m.isSaunaAdmin ? ' <span class="admin-badge" style="background: var(--warning);">SAUNA</span>' : ''} ${badge}</div>
             <div class="subtitle">${m.email || 'bez emailu'}</div>
           </div>
           <div class="right ${amountClass}">${formatKc(m.balance)}</div>
@@ -4116,6 +4460,21 @@ function renderAdminSettings() {
       <h3>Číslo účtu</h3>
       <p style="color: var(--ink-soft); font-size: 13px; margin-bottom: 10px;">Zobrazí se členům s dluhem.</p>
       <input type="text" id="set-bank" value="${s.bankAccount || ''}" placeholder="1234567890/0100">
+      <div style="font-size: 12px; color: var(--ink-soft); margin-top: 4px;">
+        Ve tvaru 1234567890/0100 – z něj se dělá QR kód k platbě.
+      </div>
+    </div>
+
+    <div class="section-title" style="margin: 16px 0 8px;">Roční příspěvky</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <div class="form-group" style="margin:0;">
+        <label>Plný (Kč)</label>
+        <input type="number" id="set-fee-full" min="0" value="${s.feeFull ?? 800}">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Zvýhodněný (Kč)</label>
+        <input type="number" id="set-fee-reduced" min="0" value="${s.feeReduced ?? 500}">
+      </div>
     </div>
 
     <div class="settings-card">
@@ -4145,6 +4504,8 @@ function renderAdminSettings() {
 async function saveSettings() {
   state.setup.clubName = document.getElementById('set-clubname').value.trim() || 'NaturClimb';
   state.setup.bankAccount = document.getElementById('set-bank').value.trim();
+  state.setup.feeFull = parseInt(document.getElementById('set-fee-full')?.value) || 0;
+  state.setup.feeReduced = parseInt(document.getElementById('set-fee-reduced')?.value) || 0;
   state.setup.debtLimit = parseInt(document.getElementById('set-debt').value) || -500;
   state.setup.creditLimit = parseInt(document.getElementById('set-credit').value) || 500;
   await saveSetup();
