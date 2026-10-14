@@ -1127,8 +1127,10 @@ function genId() {
 }
 
 function formatKc(amount) {
-  const sign = amount > 0 ? '+' : '';
-  return `${sign}${amount.toLocaleString('cs-CZ')} Kč`;
+  const cislo = Number(amount);
+  if (!Number.isFinite(cislo)) return '—';
+  const sign = cislo > 0 ? '+' : '';
+  return `${sign}${cislo.toLocaleString('cs-CZ')} Kč`;
 }
 
 function formatDate(iso) {
@@ -3140,7 +3142,7 @@ function renderHistoryItem(tx) {
       <div class="history-date">${formatDate(tx.createdAt)}</div>
       <div class="history-desc">${desc}</div>
       <div class="history-amount ${amountClass}">${formatKc(tx.amount)}</div>
-      <div class="history-balance">stav po: ${formatKc(tx.balanceAfter)}</div>
+      ${Number.isFinite(Number(tx.balanceAfter)) ? `<div class="history-balance">stav po: ${formatKc(tx.balanceAfter)}</div>` : ''}
       ${tx.description ? `<div class="history-note">"${tx.description}"</div>` : ''}
     </div>
   `;
