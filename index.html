@@ -121,6 +121,21 @@
   .fee-dot.paid { background: var(--green); }
   .fee-dot.unpaid { background: var(--accent); }
 
+  .fee-stamp {
+    display: inline-block; margin-top: 6px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+    color: var(--green); background: rgba(46,125,50,0.10);
+    border: 1px solid rgba(46,125,50,0.35);
+    padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+    font-family: 'Bricolage Grotesque', sans-serif;
+  }
+  .fee-cta {
+    background: var(--accent-dim); border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 12px; padding: 14px; margin-bottom: 16px;
+  }
+  .fee-cta .fee-cta-title { font-weight: 700; font-size: 15px; margin-bottom: 2px; }
+  .fee-cta .fee-cta-sub { font-size: 12px; color: var(--ink-soft); margin-bottom: 10px; }
+
   .admin-badge {
     font-size: 10px; background: var(--secondary); color: white;
     padding: 2px 6px; border-radius: 4px;
@@ -725,10 +740,13 @@ const state = {
   eventRegistrations: [],
   eventRides: [],
   paymentClaims: [],
+  membershipFees: [],
+  feesReady: false,
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
   ui: { historyView: false, selectedMemberId: null, selectedTrainingId: null, memberSearch: '',
+        feeFilter: 'all', feeSeason: null, eventRegFilter: 'all',
         authStep: 'email', authEmail: '', authBusy: false }
 };
 
@@ -769,7 +787,8 @@ async function loadAllData() {
         debtLimit: settingsRow.debt_limit ?? -500,
         creditLimit: settingsRow.credit_limit ?? 500,
         feeFull: settingsRow.membership_fee_full ?? 800,
-        feeReduced: settingsRow.membership_fee_reduced ?? 500
+        feeReduced: settingsRow.membership_fee_reduced ?? 500,
+        feeSeasonStartMonth: settingsRow.fee_season_start_month ?? 9
       };
     }
 
@@ -891,9 +910,16 @@ async function loadAllData() {
     state.paymentClaims = (claimsData || []).map(c => ({
       id: c.id, memberId: c.member_id, amount: c.amount,
       kind: c.kind, feeType: c.fee_type, year: c.year,
+      feeAmount: c.fee_amount || 0, topupAmount: c.topup_amount || 0,
+      seasonYear: c.season_year != null ? c.season_year : c.year,
       status: c.status, note: c.note,
       createdAt: c.created_at, decidedAt: c.decided_at
     }));
+
+    // Zaplacene clenske prispevky po sezonach.
+    // Kdyz SQL krok11 jeste nebezel, tabulka neexistuje - appka pak jen
+    // schova razitka a filtry a chova se jako pred zmenou.
+    await nactiPrispevky();
 
     // Event rides
     const { data: ridesData, error: riErr } = await db
@@ -927,6 +953,8 @@ async function saveSetup() {
     bank_account: state.setup.bankAccount || '',
     membership_fee_full: state.setup.feeFull ?? 800,
     membership_fee_reduced: state.setup.feeReduced ?? 500,
+    // sloupec existuje teprve po SQL kroku 11 - jinak bychom upsert rozbili
+    ...(state.feesReady ? { fee_season_start_month: state.setup.feeSeasonStartMonth ?? 9 } : {}),
     debt_limit: state.setup.debtLimit,
     credit_limit: state.setup.creditLimit,
     is_setup: true,
@@ -1298,7 +1326,8 @@ function getSettings() {
     debtLimit: -500,
     creditLimit: 500,
     feeFull: 800,
-    feeReduced: 500
+    feeReduced: 500,
+    feeSeasonStartMonth: 9
   };
 }
 
@@ -1667,23 +1696,85 @@ function mojeCekajiciPlatba() {
 
 // Zelený puntík = letos uz dorazil prispevek (nebo jina potvrzena platba
 // aspon ve vysi zvyhodnene sazby).
-function maZaplacenyPrispevek(memberId) {
+// ---- Sezona prispevku -------------------------------------------------
+// Sezona 2026/27 = 1. 9. 2026 az 31. 8. 2027. Zacatek se da v nastaveni
+// prepnout; mesic 1 znamena obycejny kalendarni rok.
+function sezonaZacatek() {
+  const m = parseInt(getSettings().feeSeasonStartMonth ?? 9);
+  return (m >= 1 && m <= 12) ? m : 9;
+}
+
+function aktualniSezona(kdy) {
+  const d = kdy ? new Date(kdy) : new Date();
+  return (d.getMonth() + 1) >= sezonaZacatek() ? d.getFullYear() : d.getFullYear() - 1;
+}
+
+function popisSezony(rok) {
+  if (sezonaZacatek() === 1) return String(rok);
+  return rok + '/' + String((rok + 1) % 100).padStart(2, '0');
+}
+
+function prispevekSezony(memberId, rok) {
+  const sezona = (rok == null) ? aktualniSezona() : rok;
+  return state.membershipFees.find(f => f.memberId === memberId && f.seasonYear === sezona) || null;
+}
+
+function sazbaPrispevku(typ) {
+  const s = getSettings();
+  return typ === 'reduced' ? (s.feeReduced ?? 500) : (s.feeFull ?? 800);
+}
+
+async function nactiPrispevky() {
+  const { data, error } = await db.from('membership_fees').select('*');
+  if (error) {
+    state.feesReady = false;
+    state.membershipFees = [];
+    console.warn('membership_fees nedostupne (nebezel SQL krok 11?):', error.message);
+    return;
+  }
+  state.feesReady = true;
+  state.membershipFees = (data || []).map(f => ({
+    id: f.id, memberId: f.member_id, seasonYear: f.season_year,
+    feeType: f.fee_type, amount: f.amount, paidAt: f.paid_at, note: f.note
+  }));
+}
+
+function maZaplacenyPrispevek(memberId, rok) {
+  // Po SQL kroku 11 je to skutecny zapis v membership_fees.
+  if (state.feesReady) return !!prispevekSezony(memberId, rok);
+
+  // Dokud krok 11 nebezel, zustava stary odhad podle transakci.
   const settings = getSettings();
-  const rok = new Date().getFullYear();
+  const r = new Date().getFullYear();
   const prah = settings.feeReduced ?? 500;
   return state.transactions.some(t =>
     t.memberId === memberId &&
-    new Date(t.createdAt).getFullYear() === rok &&
+    new Date(t.createdAt).getFullYear() === r &&
     (t.type === 'membership_fee' || (t.amount >= prah && t.amount > 0))
   );
 }
 
-function openPaymentDialog() {
+// Stav formulare platby. Prispevek a dobiti jdou zaskrtnout oba naraz.
+let payForm = { fee: false, feeType: 'full', topup: false };
+
+function popisCekajiciPlatby(c) {
+  const fee = c.feeAmount || 0;
+  const top = c.topupAmount || 0;
+  if (fee > 0 || top > 0) {
+    const casti = [];
+    if (fee > 0) casti.push(`členský příspěvek ${fee} Kč (${popisSezony(c.seasonYear != null ? c.seasonYear : aktualniSezona())})`);
+    if (top > 0) casti.push(`dobití konta ${top} Kč`);
+    return casti.join(' + ');
+  }
+  // platba ohlasena starsi verzi appky
+  return c.kind === 'membership' ? `Členský příspěvek ${c.year || ''}` : 'Platba na konto';
+}
+
+function openPaymentDialog(predvybrano) {
   const settings = getSettings();
   const user = getCurrentUser();
   const cekajici = mojeCekajiciPlatba();
   const dluh = Math.max(0, -recalcBalance(user.id));
-  const rok = new Date().getFullYear();
 
   if (cekajici) {
     openModal(`
@@ -1695,7 +1786,7 @@ function openPaymentDialog() {
       <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;">
         <div style="font-size:22px;font-weight:700;">${cekajici.amount} Kč</div>
         <div style="font-size:13px;color:var(--ink-soft);margin-top:4px;">
-          ${cekajici.kind === 'membership' ? `Členský příspěvek ${cekajici.year}` : 'Platba na konto'}
+          ${popisCekajiciPlatby(cekajici)}
           · ohlášeno ${new Date(cekajici.createdAt).toLocaleDateString('cs-CZ')}
         </div>
       </div>
@@ -1710,6 +1801,222 @@ function openPaymentDialog() {
     return;
   }
 
+  // Dokud nebezel SQL krok 11, drzime stary dialog s jednou polozkou.
+  if (!state.feesReady) { dialogPlatbyStary(dluh); return; }
+
+  const sezona = aktualniSezona();
+  const jizZaplaceno = !!prispevekSezony(user.id, sezona);
+
+  payForm = {
+    fee: (predvybrano === 'fee') && !jizZaplaceno,
+    feeType: 'full',
+    topup: (predvybrano !== 'fee')
+  };
+
+  const ucet = settings.bankAccount || '';
+  const iban = ibanZCzUctu(ucet);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">💸 Zaplatil jsem na oddílový účet</div>
+      <div class="modal-subtitle">Pošli převodem a tady to ohlas – admin platbu potvrdí podle výpisu.</div>
+    </div>
+
+    <div class="form-group">
+      <label>Co platíš?
+        <span style="font-weight:400;color:var(--ink-soft);font-size:12px;">(můžeš vybrat i obojí)</span>
+      </label>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+
+        ${jizZaplaceno ? `
+          <div style="padding:12px 14px;border:1px dashed var(--line);border-radius:10px;font-size:13px;color:var(--ink-soft);">
+            🎫 Roční příspěvek ${popisSezony(sezona)} – <strong>už máš zaplaceno</strong> ✓
+          </div>
+        ` : `
+          <button class="btn-choice${payForm.fee ? ' selected' : ''}" id="pay-fee-toggle"
+            onclick="togglePrispevek()" style="text-align:left;padding:12px 14px;">
+            🎫 Roční příspěvek ${popisSezony(sezona)}
+          </button>
+          <div id="pay-fee-rates" style="display:${payForm.fee ? 'flex' : 'none'};gap:8px;padding-left:12px;">
+            <button class="btn-choice${payForm.feeType === 'full' ? ' selected' : ''}" data-fee="full"
+              onclick="vyberSazbu('full')" style="flex:1;padding:10px;font-size:13px;">
+              Plný<br><strong>${settings.feeFull} Kč</strong>
+            </button>
+            <button class="btn-choice${payForm.feeType === 'reduced' ? ' selected' : ''}" data-fee="reduced"
+              onclick="vyberSazbu('reduced')" style="flex:1;padding:10px;font-size:13px;">
+              Zvýhodněný<br><strong>${settings.feeReduced} Kč</strong>
+            </button>
+          </div>
+        `}
+
+        <button class="btn-choice${payForm.topup ? ' selected' : ''}" id="pay-topup-toggle"
+          onclick="toggleDobiti()" style="text-align:left;padding:12px 14px;">
+          💰 Dobití konta${dluh > 0 ? ` – dlužíš ${dluh} Kč` : ''}
+        </button>
+        <div id="pay-topup-wrap" style="display:${payForm.topup ? 'block' : 'none'};padding-left:12px;">
+          <input type="number" id="pay-topup" min="1" max="100000" inputmode="numeric"
+            value="${dluh || ''}" placeholder="např. 1000" oninput="prepocitejPlatbu()">
+        </div>
+      </div>
+    </div>
+
+    <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">
+        <span style="font-size:13px;color:var(--ink-soft);">Částka k zaplacení</span>
+        <strong id="pay-total" style="font-size:22px;">0 Kč</strong>
+      </div>
+      <div id="pay-breakdown" style="font-size:12px;color:var(--ink-soft);margin-top:4px;"></div>
+    </div>
+
+    ${ucet ? `
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;text-align:center;">
+        <div id="pay-qr" style="min-height:40px;display:flex;justify-content:center;align-items:center;">
+          <span style="font-size:12px;color:var(--ink-soft);">Vyber, co platíš, a naskočí QR kód</span>
+        </div>
+        <div style="margin-top:10px;font-size:14px;font-weight:600;">${ucet}</div>
+        <button class="copy-btn" style="margin-top:6px;" onclick="copyBank(event, '${ucet}')">Kopírovat číslo účtu</button>
+        ${iban ? '' : '<div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">QR kód neumím vytvořit – číslo účtu v nastavení není ve tvaru 123456789/0100.</div>'}
+      </div>
+    ` : `
+      <div style="background:var(--accent-dim);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;">
+        Admin ještě nevyplnil číslo oddílového účtu. Domluv se s ním na platbě.
+      </div>
+    `}
+
+    <div id="pay-error" style="color:var(--warning);font-size:13px;display:none;margin-bottom:8px;text-align:center;"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" id="pay-submit" onclick="odeslatOhlaseniPlatby()">Ohlásit platbu</button>
+    </div>
+  `);
+
+  prepocitejPlatbu();
+}
+
+function togglePrispevek() {
+  payForm.fee = !payForm.fee;
+  const b = document.getElementById('pay-fee-toggle');
+  if (b) b.classList.toggle('selected', payForm.fee);
+  const r = document.getElementById('pay-fee-rates');
+  if (r) r.style.display = payForm.fee ? 'flex' : 'none';
+  prepocitejPlatbu();
+}
+
+function vyberSazbu(typ) {
+  payForm.feeType = typ;
+  payForm.fee = true;
+  const b = document.getElementById('pay-fee-toggle');
+  if (b) b.classList.add('selected');
+  const r = document.getElementById('pay-fee-rates');
+  if (r) r.style.display = 'flex';
+  document.querySelectorAll('#pay-fee-rates [data-fee]').forEach(x =>
+    x.classList.toggle('selected', x.dataset.fee === typ));
+  prepocitejPlatbu();
+}
+
+function toggleDobiti() {
+  payForm.topup = !payForm.topup;
+  const b = document.getElementById('pay-topup-toggle');
+  if (b) b.classList.toggle('selected', payForm.topup);
+  const w = document.getElementById('pay-topup-wrap');
+  if (w) w.style.display = payForm.topup ? 'block' : 'none';
+  if (payForm.topup) {
+    const i = document.getElementById('pay-topup');
+    if (i) { i.focus(); i.select(); }
+  }
+  prepocitejPlatbu();
+}
+
+function dobitiZFormulare() {
+  if (!payForm.topup) return 0;
+  return parseInt(document.getElementById('pay-topup')?.value || '0') || 0;
+}
+
+function castkaKPlatbe() {
+  const stary = document.getElementById('pay-amount');
+  if (stary) return parseInt(stary.value || '0') || 0;
+  return (payForm.fee ? sazbaPrispevku(payForm.feeType) : 0) + dobitiZFormulare();
+}
+
+function prepocitejPlatbu() {
+  const fee = payForm.fee ? sazbaPrispevku(payForm.feeType) : 0;
+  const top = dobitiZFormulare();
+  const celkem = fee + top;
+
+  const totalEl = document.getElementById('pay-total');
+  if (totalEl) totalEl.textContent = celkem + ' Kč';
+
+  const bd = document.getElementById('pay-breakdown');
+  if (bd) {
+    const casti = [];
+    if (fee > 0) casti.push(`příspěvek ${fee} Kč (${payForm.feeType === 'reduced' ? 'zvýhodněný' : 'plný'}, ${popisSezony(aktualniSezona())})`);
+    if (top > 0) casti.push(`dobití konta ${top} Kč`);
+    bd.textContent = casti.length ? 'Z toho ' + casti.join(' + ') : 'Zaškrtni, co platíš.';
+  }
+
+  prekresliQrPlatby();
+}
+
+function prekresliQrPlatby() {
+  const settings = getSettings();
+  const iban = ibanZCzUctu(settings.bankAccount);
+  const castka = castkaKPlatbe();
+  const el = document.getElementById('pay-qr');
+  if (!el) return;
+  if (!iban || !castka || castka <= 0) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Vyber částku a naskočí QR kód</span>';
+    return;
+  }
+  const user = getCurrentUser();
+  vykresliQr('pay-qr', spaydRetezec(iban, castka, (user?.name || '') + ' ' + settings.clubName));
+}
+
+async function odeslatOhlaseniPlatby() {
+  const chyba = document.getElementById('pay-error');
+  const ukaz = text => { if (chyba) { chyba.textContent = text; chyba.style.display = 'block'; } };
+  const btn = document.getElementById('pay-submit');
+  const staryDialog = !!document.getElementById('pay-kind-buttons');
+
+  let rpcNazev, rpcArgs, celkem;
+
+  if (staryDialog) {
+    const vybrany = document.querySelector('#pay-kind-buttons .btn-choice.selected');
+    celkem = parseInt(document.getElementById('pay-amount')?.value || '0');
+    if (!vybrany) { ukaz('Vyber, co platíš'); return; }
+    if (!celkem || celkem <= 0) { ukaz('Zadej částku'); return; }
+    rpcNazev = 'claim_payment';
+    rpcArgs = { p_amount: celkem, p_kind: vybrany.dataset.kind, p_fee_type: vybrany.dataset.fee || null };
+  } else {
+    if (!payForm.fee && !payForm.topup) { ukaz('Zaškrtni, co platíš'); return; }
+    const top = dobitiZFormulare();
+    if (payForm.topup && top <= 0) { ukaz('Zadej částku dobití konta'); return; }
+    celkem = (payForm.fee ? sazbaPrispevku(payForm.feeType) : 0) + top;
+    if (celkem <= 0) { ukaz('Zadej částku'); return; }
+    rpcNazev = 'claim_payment2';
+    rpcArgs = { p_fee_type: payForm.fee ? payForm.feeType : null, p_topup_amount: top };
+  }
+
+  if (celkem > 100000) { ukaz('Tak velkou částku radši dohodni s adminem osobně'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Odesílám…'; }
+
+  const { error } = await db.rpc(rpcNazev, rpcArgs);
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Ohlásit platbu'; }
+  if (error) { showDbError(error, 'Ohlášení se nepovedlo'); return; }
+
+  await nactiPlatby();
+  closeModal();
+  showToast('✓ Platba ohlášena – admin ji potvrdí');
+  render();
+}
+
+// Dialog pred SQL krokem 11: jedna polozka, jedna castka.
+function dialogPlatbyStary(dluh) {
+  const settings = getSettings();
   const ucet = settings.bankAccount || '';
   const iban = ibanZCzUctu(ucet);
 
@@ -1778,48 +2085,6 @@ function vyberTypPlatby(btn) {
   prekresliQrPlatby();
 }
 
-function prekresliQrPlatby() {
-  const settings = getSettings();
-  const iban = ibanZCzUctu(settings.bankAccount);
-  const castka = parseInt(document.getElementById('pay-amount')?.value || '0');
-  const el = document.getElementById('pay-qr');
-  if (!el) return;
-  if (!iban || !castka || castka <= 0) {
-    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Vyber částku a naskočí QR kód</span>';
-    return;
-  }
-  const user = getCurrentUser();
-  vykresliQr('pay-qr', spaydRetezec(iban, castka, (user?.name || '') + ' ' + settings.clubName));
-}
-
-async function odeslatOhlaseniPlatby() {
-  const vybrany = document.querySelector('#pay-kind-buttons .btn-choice.selected');
-  const castka = parseInt(document.getElementById('pay-amount')?.value || '0');
-  const chyba = document.getElementById('pay-error');
-  const ukaz = text => { if (chyba) { chyba.textContent = text; chyba.style.display = 'block'; } };
-
-  if (!vybrany) { ukaz('Vyber, co platíš'); return; }
-  if (!castka || castka <= 0) { ukaz('Zadej částku'); return; }
-  if (castka > 100000) { ukaz('Tak velkou částku radši dohodni s adminem osobně'); return; }
-
-  const btn = document.getElementById('pay-submit');
-  if (btn) { btn.disabled = true; btn.textContent = 'Odesílám…'; }
-
-  const { error } = await db.rpc('claim_payment', {
-    p_amount: castka,
-    p_kind: vybrany.dataset.kind,
-    p_fee_type: vybrany.dataset.fee || null
-  });
-
-  if (btn) { btn.disabled = false; btn.textContent = 'Ohlásit platbu'; }
-  if (error) { showDbError(error, 'Ohlášení se nepovedlo'); return; }
-
-  await nactiPlatby();
-  closeModal();
-  showToast('✓ Platba ohlášena – admin ji potvrdí');
-  render();
-}
-
 async function zrusitMojiPlatbu(claimId) {
   const { error } = await db.rpc('cancel_my_claim', { p_claim_id: claimId });
   if (error) { showDbError(error, 'Zrušení se nepovedlo'); return; }
@@ -1835,6 +2100,8 @@ async function nactiPlatby() {
   state.paymentClaims = (data || []).map(c => ({
     id: c.id, memberId: c.member_id, amount: c.amount,
     kind: c.kind, feeType: c.fee_type, year: c.year,
+    feeAmount: c.fee_amount || 0, topupAmount: c.topup_amount || 0,
+    seasonYear: c.season_year != null ? c.season_year : c.year,
     status: c.status, note: c.note,
     createdAt: c.created_at, decidedAt: c.decided_at
   }));
@@ -1859,6 +2126,10 @@ async function zamitnoutPlatbu(claimId) {
 
 function vysvetliPuntik() {
   const settings = getSettings();
+  if (state.feesReady) {
+    showToast(`Zelená = má zaplacený příspěvek na sezónu ${popisSezony(state.ui.feeSeason ?? aktualniSezona())}. Červená = zatím ne.`);
+    return;
+  }
   showToast(`Zelená = letos dorazil příspěvek (nebo jiná platba aspoň ${settings.feeReduced} Kč). Červená = zatím nic.`);
 }
 
@@ -1879,7 +2150,7 @@ function renderAdminPayments() {
           <div class="info">
             <div class="title">${m ? m.name : 'Neznámý člen'} · ${c.amount} Kč</div>
             <div class="subtitle">
-              ${c.kind === 'membership' ? `🎫 Příspěvek ${c.year}${c.feeType === 'reduced' ? ' (zvýhodněný)' : ''}` : '💰 Dobití konta'}
+              ${popisCekajiciPlatby(c)}
               · ohlášeno ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
             </div>
             <div style="display:flex;gap:8px;margin-top:8px;">
@@ -1975,6 +2246,34 @@ function renderMember() {
     </div>
 
     ${(() => {
+      // Vyzva k zaplaceni prispevku. Objevi se jen kdyz neni zaplaceno
+      // a zmizi, az admin platbu potvrdi.
+      if (!state.feesReady) return '';
+      if (prispevekSezony(user.id)) return '';
+
+      const ceka = mojeCekajiciPlatba();
+      const cekaPrispevek = ceka && ((ceka.feeAmount || 0) > 0 || ceka.kind === 'membership' || ceka.kind === 'both');
+      if (cekaPrispevek) {
+        return `
+          <div class="fee-cta">
+            <div class="fee-cta-title">⏳ Příspěvek ohlášen</div>
+            <div class="fee-cta-sub">Sezóna ${popisSezony(aktualniSezona())} · čeká na potvrzení adminem. Posílat znovu není potřeba.</div>
+          </div>`;
+      }
+
+      return `
+        <div class="fee-cta">
+          <div class="fee-cta-title">🎫 Je čas zaplatit členské příspěvky</div>
+          <div class="fee-cta-sub">
+            Sezóna ${popisSezony(aktualniSezona())} · ${settings.feeFull} Kč, zvýhodněný ${settings.feeReduced} Kč
+          </div>
+          <button class="btn btn-primary" style="width:100%;" onclick="openPaymentDialog('fee')">
+            Zaplatit příspěvek →
+          </button>
+        </div>`;
+    })()}
+
+    ${(() => {
       const cekajici = mojeCekajiciPlatba();
       return cekajici ? `
         <button class="btn btn-secondary" style="width:100%;margin-bottom:16px;" onclick="openPaymentDialog()">
@@ -2017,6 +2316,10 @@ function renderHeader() {
       <div>
         <div class="club-name">🧗 ${settings.clubName}</div>
         <h1>Ahoj ${user.name.split(' ')[0]}! 👋</h1>
+        ${(() => {
+          const fee = state.feesReady ? prispevekSezony(user.id) : null;
+          return fee ? `<div><span class="fee-stamp">✓ Příspěvky zaplaceny ${popisSezony(fee.seasonYear)}</span></div>` : '';
+        })()}
       </div>
       <div class="user-info">
         <button class="logout-btn" onclick="logout()">Odhlásit</button>
@@ -2245,6 +2548,13 @@ function openEventDetail(eventId) {
   const nights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
   const totalBeer1 = regs.reduce((s,r) => s + (r.beer1Count||0), 0);
   const totalBeer2 = regs.reduce((s,r) => s + (r.beer2Count||0), 0);
+
+  // Filtr: koho je potreba zuctovat rucne (kdo si to neudelal sam)
+  const filtrReg = state.ui.eventRegFilter || 'all';
+  const nezuctovani = regs.filter(r => !r.settledAt);
+  const zuctovaniSami = regs.filter(r => r.settledAt);
+  const vypis = filtrReg === 'unsettled' ? nezuctovani
+              : (filtrReg === 'settled' ? zuctovaniSami : regs);
   const html = `
     <div class="modal-handle"></div>
     <button class="modal-close" onclick="closeModal()">×</button>
@@ -2257,7 +2567,19 @@ function openEventDetail(eventId) {
       ${e.status !== 'settled' ? `<button onclick="settleEvent('${e.id}')" style="background:var(--ink);color:white;">💰 Zúčtovat</button>` : '<span class="status-badge settled">Zúčtováno</span>'}
     </div>
     <div class="section-title" style="margin-top:12px;">Přihlášení (${regs.length})</div>
-    ${regs.length === 0 ? '<div class="empty-msg" style="padding:12px;">Nikdo nepřihlášen</div>' : `<ul style="list-style:none;">${regs.map(r => {
+    ${regs.length === 0 ? '' : `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button class="btn-choice${filtrReg === 'all' ? ' selected' : ''}" style="padding:6px 10px;font-size:12px;"
+          onclick="setEventRegFilter('all','${e.id}')">Všichni ${regs.length}</button>
+        <button class="btn-choice${filtrReg === 'unsettled' ? ' selected' : ''}" style="padding:6px 10px;font-size:12px;"
+          onclick="setEventRegFilter('unsettled','${e.id}')">⏳ Nezúčtovaní ${nezuctovani.length}</button>
+        <button class="btn-choice${filtrReg === 'settled' ? ' selected' : ''}" style="padding:6px 10px;font-size:12px;"
+          onclick="setEventRegFilter('settled','${e.id}')">🧾 Zúčtovaní sami ${zuctovaniSami.length}</button>
+      </div>
+    `}
+    ${regs.length === 0 ? '<div class="empty-msg" style="padding:12px;">Nikdo nepřihlášen</div>'
+      : (vypis.length === 0 ? `<div class="empty-msg" style="padding:12px;">${filtrReg === 'unsettled' ? 'Všichni se zúčtovali sami. 👏' : 'Nikdo se sám nezúčtoval.'}</div>`
+      : `<ul style="list-style:none;">${vypis.map(r => {
       const m = getMember(r.memberId); if (!m) return '';
       const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
       const rNights = r.nights ?? defaultNights;
@@ -2279,7 +2601,7 @@ function openEventDetail(eventId) {
         </div>
         ${e.status !== 'settled' && !r.settledAt ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
       </li>`;
-    }).join('')}</ul>`}
+    }).join('')}</ul>`)}
     <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px;margin-top:12px;font-size:13px;">
       <strong>Shrnutí:</strong><br>
       ${e.beer1Name?`${e.beer1Name}: ${totalBeer1} ks · `:''}${e.beer2Name?`${e.beer2Name}: ${totalBeer2} ks`:''}${(e.beer1Name||e.beer2Name)?'<br>':''}
@@ -2287,6 +2609,11 @@ function openEventDetail(eventId) {
     </div>
   `;
   openModal(html);
+}
+
+function setEventRegFilter(f, eventId) {
+  state.ui.eventRegFilter = f;
+  openEventDetail(eventId);
 }
 
 function adminEditEventReg(eventId, memberId) {
@@ -4260,6 +4587,56 @@ function filterMembers(q) {
   if (empty) empty.style.display = (items.length && visible === 0) ? '' : 'none';
 }
 
+function setFeeFilter(f) {
+  state.ui.feeFilter = f;
+  state.ui.memberSearch = '';
+  render();
+}
+
+function setFeeSeason(r) {
+  state.ui.feeSeason = parseInt(r) || aktualniSezona();
+  render();
+}
+
+function kopirujEmailyNezaplacenych() {
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const emaily = state.members
+    .filter(m => m.isActive !== false && m.email && !maZaplacenyPrispevek(m.id, sezona))
+    .map(m => m.email);
+  if (!emaily.length) { showToast('Nikdo k zkopírování'); return; }
+  const text = emaily.join('; ');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast(`✓ ${emaily.length} e-mailů ve schránce`))
+      .catch(() => showToast('Kopírování nevyšlo'));
+  } else {
+    showToast('Kopírování v tomhle prohlížeči nejde');
+  }
+}
+
+async function oznacPrispevek(memberId, typ) {
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const { error } = await db.rpc('set_membership_fee', {
+    p_member_id: memberId, p_fee_type: typ, p_season: sezona, p_note: 'hotovost'
+  });
+  if (error) { showDbError(error, 'Zápis příspěvku se nepovedl'); return; }
+  await nactiPrispevky();
+  closeModal();
+  showToast('✓ Příspěvek zapsán');
+  render();
+}
+
+async function zrusPrispevek(memberId) {
+  if (!confirm('Opravdu vzít zápis příspěvku zpět?')) return;
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const { error } = await db.rpc('unset_membership_fee', { p_member_id: memberId, p_season: sezona });
+  if (error) { showDbError(error, 'Zrušení se nepovedlo'); return; }
+  await nactiPrispevky();
+  closeModal();
+  showToast('Zápis příspěvku zrušen');
+  render();
+}
+
 function clearMemberSearch() {
   state.ui.memberSearch = '';
   const input = document.getElementById('member-search');
@@ -4273,16 +4650,50 @@ function renderAdminMembers() {
   const settings = getSettings();
   const sorted = [...state.members].sort((a, b) => a.balance - b.balance);
 
+  // Filtr podle clenskych prispevku (jen kdyz uz bezel SQL krok 11)
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const feeFiltr = state.feesReady ? (state.ui.feeFilter || 'all') : 'all';
+  const zaplatili = sorted.filter(m => maZaplacenyPrispevek(m.id, sezona));
+  const nezaplatili = sorted.filter(m => !maZaplacenyPrispevek(m.id, sezona));
+  const seznam = feeFiltr === 'paid' ? zaplatili : (feeFiltr === 'unpaid' ? nezaplatili : sorted);
+
   const needle = normText(state.ui.memberSearch || '').trim();
   const visibleCount = needle
-    ? sorted.filter(m => normText(`${m.name} ${m.email || ''}`).includes(needle)).length
-    : sorted.length;
+    ? seznam.filter(m => normText(`${m.name} ${m.email || ''}`).includes(needle)).length
+    : seznam.length;
 
   return `
     <div class="quick-actions" style="margin-bottom: 16px;">
       <button onclick="openMemberForm()" style="background: var(--ink); color: var(--paper);">+ Nový člen</button>
       <button onclick="openBulkImport()">📥 Hromadný import</button>
     </div>
+
+    ${state.feesReady ? `
+      <div style="margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+          <div style="font-size:12px;color:var(--ink-soft);font-weight:600;">🎫 Členské příspěvky</div>
+          <select onchange="setFeeSeason(this.value)"
+            style="font-size:12px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:white;">
+            ${[0, 1, 2].map(i => aktualniSezona() - i).map(r =>
+              `<option value="${r}"${r === sezona ? ' selected' : ''}>Sezóna ${popisSezony(r)}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn-choice${feeFiltr === 'all' ? ' selected' : ''}" onclick="setFeeFilter('all')"
+            style="padding:6px 10px;font-size:12px;">Všichni ${sorted.length}</button>
+          <button class="btn-choice${feeFiltr === 'paid' ? ' selected' : ''}" onclick="setFeeFilter('paid')"
+            style="padding:6px 10px;font-size:12px;">✓ Zaplaceno ${zaplatili.length}</button>
+          <button class="btn-choice${feeFiltr === 'unpaid' ? ' selected' : ''}" onclick="setFeeFilter('unpaid')"
+            style="padding:6px 10px;font-size:12px;">✗ Nezaplaceno ${nezaplatili.length}</button>
+        </div>
+        ${feeFiltr === 'unpaid' && nezaplatili.filter(m => m.email).length ? `
+          <button class="btn btn-secondary" style="width:100%;margin-top:8px;padding:8px;font-size:13px;"
+            onclick="kopirujEmailyNezaplacenych()">
+            📋 Kopírovat e-maily nezaplacených (${nezaplatili.filter(m => m.email).length})
+          </button>
+        ` : ''}
+      </div>
+    ` : ''}
 
     ${sorted.length > 5 ? `
       <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
@@ -4298,7 +4709,7 @@ function renderAdminMembers() {
           value="${escapeAttr(state.ui.memberSearch || '')}"
           oninput="filterMembers(this.value)">
         <div style="font-size: 12px; color: var(--ink-soft); margin-top: 6px;">
-          ${sorted.length} členů celkem
+          ${feeFiltr === 'all' ? `${sorted.length} členů celkem` : `${seznam.length} z ${sorted.length} členů`}
         </div>
       </div>
     ` : ''}
@@ -4309,7 +4720,7 @@ function renderAdminMembers() {
         <div>Žádní členové. Přidej prvního.</div>
         <button class="btn btn-primary" style="margin-top: 16px;" onclick="openMemberForm()">+ Přidat člena</button>
       </div>
-    ` : '<div id="member-list">' + sorted.map(m => {
+    ` : '<div id="member-list">' + seznam.map(m => {
       let badge = '';
       let amountClass = '';
       const hay = normText(`${m.name} ${m.email || ''}`);
@@ -4321,7 +4732,7 @@ function renderAdminMembers() {
           data-search="${escapeAttr(hay)}"${hidden ? ' style="display: none;"' : ''}>
           <div class="member-avatar">${getInitials(m.name)}</div>
           <div class="info">
-            <div class="title"><span class="fee-dot ${maZaplacenyPrispevek(m.id) ? 'paid' : 'unpaid'}" title="Členský příspěvek"></span>${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''}${m.isSaunaAdmin ? ' <span class="admin-badge" style="background: var(--warning);">SAUNA</span>' : ''} ${badge}</div>
+            <div class="title"><span class="fee-dot ${maZaplacenyPrispevek(m.id, sezona) ? 'paid' : 'unpaid'}" title="Členský příspěvek ${popisSezony(sezona)}"></span>${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''}${m.isSaunaAdmin ? ' <span class="admin-badge" style="background: var(--warning);">SAUNA</span>' : ''} ${badge}</div>
             <div class="subtitle">${m.email || 'bez emailu'}</div>
           </div>
           <div class="right ${amountClass}">${formatKc(m.balance)}</div>
@@ -4330,7 +4741,7 @@ function renderAdminMembers() {
     }).join('') + `
       <div id="member-search-empty" class="empty-msg" style="display: ${visibleCount === 0 ? '' : 'none'};">
         <div class="icon">🔍</div>
-        <div>Nikdo takový tu není.</div>
+        <div>${seznam.length === 0 ? (feeFiltr === 'unpaid' ? 'Všichni mají zaplaceno. 👏' : 'Zaplaceno zatím nikdo.') : 'Nikdo takový tu není.'}</div>
         <button class="btn btn-secondary" style="margin-top: 12px;" onclick="clearMemberSearch()">Zrušit hledání</button>
       </div>
     </div>`}
@@ -4499,6 +4910,33 @@ function openMemberDetail(id) {
       <button onclick="openCorrectionForm('${m.id}')">✎ Korekce</button>
       <button onclick="openMemberForm('${m.id}')">⚙ Upravit</button>
     </div>
+
+    ${state.feesReady ? (() => {
+      const sezona = state.ui.feeSeason ?? aktualniSezona();
+      const fee = prispevekSezony(m.id, sezona);
+      return `
+        <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">🎫 Členský příspěvek ${popisSezony(sezona)}</div>
+          ${fee ? `
+            <div style="font-size:12px;color:var(--ink-soft);">
+              Zaplaceno ${fee.amount} Kč (${fee.feeType === 'reduced' ? 'zvýhodněný' : 'plný'})
+              · ${new Date(fee.paidAt).toLocaleDateString('cs-CZ')}${fee.note ? ` · ${fee.note}` : ''}
+            </div>
+            <button class="btn btn-secondary" style="margin-top:8px;padding:6px 12px;font-size:12px;"
+              onclick="zrusPrispevek('${m.id}')">Vzít zápis zpět</button>
+          ` : `
+            <div style="font-size:12px;color:var(--ink-soft);">
+              Nezaplaceno. Když přinesl hotovost, zapiš to tady – na konto se nic nepřipíše.
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+                onclick="oznacPrispevek('${m.id}','full')">✓ Plný ${settings.feeFull} Kč</button>
+              <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+                onclick="oznacPrispevek('${m.id}','reduced')">✓ Zvýhodněný ${settings.feeReduced} Kč</button>
+            </div>
+          `}
+        </div>`;
+    })() : ''}
 
     <div class="section-title" style="margin-top: 8px;">Historie (${history.length})</div>
     ${history.length === 0 ? `
@@ -4726,6 +5164,19 @@ function renderAdminSettings() {
         <input type="number" id="set-fee-reduced" min="0" value="${s.feeReduced ?? 500}">
       </div>
     </div>
+    ${state.feesReady ? `
+      <div class="form-group">
+        <label>Sezóna příspěvků začíná měsícem</label>
+        <select id="set-fee-season-month">
+          ${['leden','únor','březen','duben','květen','červen','červenec','srpen','září','říjen','listopad','prosinec']
+            .map((nazev, i) => `<option value="${i + 1}"${(s.feeSeasonStartMonth ?? 9) === i + 1 ? ' selected' : ''}>${i + 1} – ${nazev}</option>`).join('')}
+        </select>
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:6px;">
+          Teď běží sezóna <strong>${popisSezony(aktualniSezona())}</strong>.
+          Lednem se z toho stane obyčejný kalendářní rok.
+        </div>
+      </div>
+    ` : ''}
 
     <div class="settings-card">
       <h3>Limity konta</h3>
@@ -4756,6 +5207,8 @@ async function saveSettings() {
   state.setup.bankAccount = document.getElementById('set-bank').value.trim();
   state.setup.feeFull = parseInt(document.getElementById('set-fee-full')?.value) || 0;
   state.setup.feeReduced = parseInt(document.getElementById('set-fee-reduced')?.value) || 0;
+  const mesicSezony = parseInt(document.getElementById('set-fee-season-month')?.value);
+  if (mesicSezony >= 1 && mesicSezony <= 12) state.setup.feeSeasonStartMonth = mesicSezony;
   state.setup.debtLimit = parseInt(document.getElementById('set-debt').value) || -500;
   state.setup.creditLimit = parseInt(document.getElementById('set-credit').value) || 500;
   await saveSetup();
