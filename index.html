@@ -1005,7 +1005,8 @@ async function saveTraining(training) {
     settlement_attendees: training._settlementAttendees || null,
     settled_at: training.settledAt || null
   });
-  if (error) { console.error('saveTraining:', error); showToast('Chyba ukládání tréninku'); }
+  if (error) { console.error('saveTraining:', error); showDbError(error, 'Trénink se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function deleteTrainingFromDb(trainingId) {
@@ -1053,7 +1054,8 @@ async function saveEvent(event) {
     beer2_name: event.beer2Name || '', beer2_price: event.beer2Price || 0,
     status: event.status || 'open'
   });
-  if (error) { console.error('saveEvent:', error); showToast('Chyba ukládání akce'); }
+  if (error) { console.error('saveEvent:', error); showDbError(error, 'Akci se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function saveEventRegistration(reg) {
@@ -1079,7 +1081,8 @@ async function saveEventRide(ride) {
     price_info: ride.priceInfo || '', note: ride.note || '',
     reservations: ride.reservations || []
   });
-  if (error) { console.error('saveEventRide:', error); showToast('Chyba ukládání odvozu'); }
+  if (error) { console.error('saveEventRide:', error); showDbError(error, 'Odvoz se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function deleteEventRide(rideId) {
@@ -2211,7 +2214,12 @@ async function saveEventForm(editId) {
     event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price, status: 'open', createdAt: new Date().toISOString() };
     state.events.push(event);
   }
-  await saveEvent(event);
+  const ulozeno = await saveEvent(event);
+  if (!ulozeno) {
+    if (!editId) state.events = state.events.filter(x => x.id !== event.id);
+    render();
+    return;   // modal zustava otevreny
+  }
   closeModal();
   showToast(`✓ Akce "${name}" uložena`);
   render();
@@ -2762,6 +2770,9 @@ async function doSaveEventReg(eventId) {
   const now = new Date().toISOString();
 
   let myReg = getMyEventReg(eventId);
+  const bylaNova = !myReg;
+  const puvodni = myReg ? { ...myReg } : null;
+
   if (myReg) {
     myReg.beer1Count = beer1Count; myReg.beer2Count = beer2Count;
     myReg.nights = nights;
@@ -2777,7 +2788,21 @@ async function doSaveEventReg(eventId) {
     };
     state.eventRegistrations.push(myReg);
   }
-  await saveEventRegistration_db(myReg);
+
+  const btn = document.querySelector('[onclick*="doSaveEventReg"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Ukládám…'; }
+
+  const ulozeno = await saveEventRegistration_db(myReg);
+
+  if (!ulozeno) {
+    // Uklid: at aplikace neukazuje prihlasku, ktera v databazi neni.
+    if (bylaNova) state.eventRegistrations = state.eventRegistrations.filter(r => r.id !== myReg.id);
+    else Object.assign(myReg, puvodni);
+    if (btn) { btn.disabled = false; btn.textContent = bylaNova ? 'Přihlásit se' : 'Uložit'; }
+    render();
+    return;   // modal zustava otevreny, at to clovek muze zkusit znovu
+  }
+
   closeModal();
   showToast('✓ Přihláška uložena');
   render();
@@ -2792,7 +2817,8 @@ async function saveEventRegistration_db(reg) {
     arrival_datetime: reg.arrivalDatetime||null,
     updated_at: new Date().toISOString()
   });
-  if (error) { console.error('saveEventReg:', error); showToast('Chyba ukládání přihlášky'); }
+  if (error) { console.error('saveEventReg:', error); showDbError(error, 'Přihlášku se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function cancelEventRegistration(eventId) {
@@ -2857,13 +2883,24 @@ async function doSaveRide(eventId) {
   const price = document.getElementById('ride-price').value.trim();
   const note = document.getElementById('ride-note').value.trim();
   let myRide = state.eventRides.find(r => r.eventId===eventId && r.driverId===state.currentUserId);
+  const bylaNova = !myRide;
+  const puvodni = myRide ? { ...myRide } : null;
   if (myRide) {
     Object.assign(myRide, { direction, seats, departureDatetime: dt?new Date(dt).toISOString():null, departurePlace: place, priceInfo: price, note });
   } else {
+    // (novou nabidku zakladame nize)
     myRide = { id: genId(), eventId, driverId: state.currentUserId, direction, seats, departureDatetime: dt?new Date(dt).toISOString():null, departurePlace: place, priceInfo: price, note, reservations: [], createdAt: new Date().toISOString() };
     state.eventRides.push(myRide);
   }
-  await saveEventRide(myRide);
+
+  const ulozeno = await saveEventRide(myRide);
+  if (!ulozeno) {
+    if (bylaNova) state.eventRides = state.eventRides.filter(r => r.id !== myRide.id);
+    else Object.assign(myRide, puvodni);
+    render();
+    return;   // modal zustava otevreny
+  }
+
   closeModal(); showToast('✓ Nabídka odvozu uložena'); render();
 }
 
@@ -3779,7 +3816,12 @@ async function saveTrainingForm(editId) {
     state.trainings.push(training);
   }
 
-  await saveTraining(training);
+  const ulozeno = await saveTraining(training);
+  if (!ulozeno) {
+    if (!editId) state.trainings = state.trainings.filter(t => t.id !== training.id);
+    render();
+    return;   // modal zustava otevreny
+  }
   closeModal();
   showToast(editId ? 'Trénink uložen' : 'Trénink vytvořen ✓');
   render();
