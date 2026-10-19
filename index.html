@@ -757,6 +757,7 @@ const state = {
   membershipFees: [],
   feesReady: false,
   itemsReady: false,
+  deadlineReady: false,
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
@@ -904,6 +905,7 @@ async function loadAllData() {
       item4Name: e.item4_name || '', item4Price: e.item4_price || 0,
       item5Name: e.item5_name || '', item5Price: e.item5_price || 0,
       item6Name: e.item6_name || '', item6Price: e.item6_price || 0,
+      settlementDeadline: e.settlement_deadline || null,
       status: e.status || 'open', createdAt: e.created_at
     }));
 
@@ -942,6 +944,7 @@ async function loadAllData() {
     // schova razitka a filtry a chova se jako pred zmenou.
     await nactiPrispevky();
     await zjistiPolozky();
+    await zjistiLhutu();
 
     // Event rides
     const { data: ridesData, error: riErr } = await db
@@ -1109,6 +1112,8 @@ async function saveEvent(event) {
       item5_name: event.item5Name || '', item5_price: event.item5Price || 0,
       item6_name: event.item6Name || '', item6_price: event.item6Price || 0
     } : {}),
+    // sloupec s lhutou existuje teprve po SQL kroku 13
+    ...(state.deadlineReady ? { settlement_deadline: event.settlementDeadline || null } : {}),
     status: event.status || 'open'
   });
   if (error) { console.error('saveEvent:', error); showDbError(error, 'Akci se nepodařilo uložit'); return false; }
@@ -2635,6 +2640,28 @@ function openEventDetail(eventId) {
       <button onclick="openEventSummary('${e.id}')">📊 Přehled</button>
       ${e.status !== 'settled' ? `<button onclick="settleEvent('${e.id}')" style="background:var(--ink);color:white;">💰 Zúčtovat</button>` : '<span class="status-badge settled">Zúčtováno</span>'}
     </div>
+    <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px;">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+        <span>🧾 Vlastní vyúčtování členů</span>
+        <strong>${e.status === 'settled' ? 'uzavřeno (akce zúčtována)' : (lzeSeVyuctovat(e) ? `otevřeno do ${popisTerminu(e)}` : `zavřeno ${popisTerminu(e)}`)}</strong>
+      </div>
+      ${e.status !== 'settled' ? (state.deadlineReady ? `
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+            onclick="prodluzLhutu('${e.id}', 5)">${lzeSeVyuctovat(e) ? '+5 dní' : 'Otevřít znovu na 5 dní'}</button>
+          <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+            onclick="prodluzLhutu('${e.id}', 14)">${lzeSeVyuctovat(e) ? '+14 dní' : 'Otevřít na 14 dní'}</button>
+        </div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">
+          Výchozí lhůta je konec akce + ${DNI_NA_VYUCTOVANI} dní. Tlačítkem ji posuneš od teď.
+        </div>
+      ` : `
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">
+          Posouvat lhůtu půjde, až pustíš SQL krok 13.
+        </div>
+      `) : ''}
+    </div>
+
     <div class="section-title" style="margin-top:12px;">Přihlášení (${regs.length})</div>
     ${regs.length === 0 ? '' : `
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
@@ -2968,6 +2995,10 @@ function openEventSettlement(eventId) {
   const myReg = getMyEventReg(eventId);
   if (!myReg) { showToast('Nejsi na tuhle akci přihlášen/a'); return; }
   if (myReg.settledAt) { showToast('Tuhle akci už máš vyúčtovanou'); return; }
+  if (!lzeSeVyuctovat(e)) {
+    showToast(`Vyúčtování se zavřelo ${popisTerminu(e)} – ozvi se adminovi`);
+    return;
+  }
 
   const maZvyhodnenou = (e.priceAccommodationReduced || 0) > 0;
   const n  = myReg.nights ?? nociAkce(e);
@@ -2986,7 +3017,7 @@ function openEventSettlement(eventId) {
       Projdi čísla a oprav je podle skutečnosti – kolik nocí jsi doopravdy přespal/a
       a kolik toho vypil/a. Po potvrzení se částka <strong>odečte z tvého konta</strong>
       a přihlášku už nepůjde měnit. Vyúčtuj se, až budeš mít jasno – klidně hned,
-      když odjíždíš dřív než ostatní.
+      když odjíždíš dřív než ostatní. <strong>Otevřené do ${popisTerminu(e)}.</strong>
     </div>
 
     <div class="form-group">
@@ -3148,6 +3179,10 @@ function renderEventCard(e) {
             <div style="margin-top:8px;font-size:13px;color:var(--ink-soft);">
               Akci zúčtoval admin.
             </div>
+          ` : !lzeSeVyuctovat(e) ? `
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-soft);">
+              ⏰ Vyúčtování se zavřelo ${popisTerminu(e)}. Zbytek dorovná admin – kdyžtak se mu ozvi.
+            </div>
           ` : `
             ${!isPast ? `<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>` : ''}
             <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="openEventSettlement('${e.id}')">
@@ -3155,8 +3190,8 @@ function renderEventCard(e) {
             </button>
             <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;text-align:center;">
               ${isPast
-                ? 'Akce skončila. Zkontroluj čísla a potvrď, ať se ti odečte správná částka.'
-                : 'Odjíždíš dřív nebo už víš, kolik jsi utratil/a? Potvrď to rovnou.'}
+                ? `Akce skončila. Vyúčtuj se do <strong>${popisTerminu(e)}</strong>, pak už to převezme admin.`
+                : `Odjíždíš dřív nebo už víš, kolik jsi utratil/a? Potvrď to rovnou. Čas máš do ${popisTerminu(e)}.`}
             </div>
           `}
         </div>
@@ -3334,6 +3369,49 @@ function pocetPolozky(reg, p) {
 // Pocty vsech sesti slotu v poradi 1..6 - presne to, co ceka databaze.
 function poctyZPrihlasky(reg) {
   return SLOTY_POLOZEK.map(s => (reg && reg[s.countKey]) || 0);
+}
+
+// ============================================
+// LHUTA NA VLASTNI VYUCTOVANI
+// ============================================
+// Clen se muze sam vyuctovat jeste 5 dni po konci akce. Pak uz to dorovna
+// admin. U konkretni akce muze admin lhutu posunout (i zpetne).
+const DNI_NA_VYUCTOVANI = 5;
+
+function terminVyuctovani(e) {
+  if (e && e.settlementDeadline) return new Date(e.settlementDeadline);
+  const d = new Date(e.endDatetime);
+  d.setDate(d.getDate() + DNI_NA_VYUCTOVANI);
+  return d;
+}
+
+function lzeSeVyuctovat(e) {
+  if (!e || e.status === 'settled') return false;
+  return new Date() <= terminVyuctovani(e);
+}
+
+function popisTerminu(e) {
+  const d = terminVyuctovani(e);
+  return d.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
+       + ' ' + d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+}
+
+async function zjistiLhutu() {
+  const { error } = await db.from('events').select('settlement_deadline').limit(1);
+  state.deadlineReady = !error;
+  if (error) console.warn('lhuta na vyuctovani nedostupna (nebezel SQL krok 13?):', error.message);
+}
+
+// Admin otevre vyuctovani znovu - treba u akce, ktera uz davno skoncila.
+async function prodluzLhutu(eventId, dni) {
+  const { data, error } = await db.rpc('set_event_settlement_deadline', {
+    p_event_id: eventId, p_dni: dni || DNI_NA_VYUCTOVANI
+  });
+  if (error) { showDbError(error, 'Lhutu se nepodarilo posunout'); return; }
+  const e = getEvent(eventId);
+  if (e && data) e.settlementDeadline = data;
+  showToast(`✓ Vyúčtování otevřeno do ${e ? popisTerminu(e) : ''}`);
+  openEventDetail(eventId);
 }
 
 async function zjistiPolozky() {
