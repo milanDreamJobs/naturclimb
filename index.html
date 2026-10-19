@@ -275,6 +275,8 @@
     display: flex; align-items: center; gap: 8px;
   }
   .section-title::after { content: ''; flex: 1; height: 1px; background: rgba(255, 255, 255, 0.4); }
+  .modal .section-title { color: var(--ink); text-shadow: none; }
+  .modal .section-title::after { background: var(--line); }
   .section-title .action-link {
     text-decoration: none; color: var(--accent);
     font-size: 12px; font-weight: 700;
@@ -758,6 +760,7 @@ const state = {
   feesReady: false,
   itemsReady: false,
   deadlineReady: false,
+  settleReady: false,
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
@@ -2224,6 +2227,76 @@ function renderAdminPayments() {
 // ============================================
 // MEMBER VIEW
 // ============================================
+// ============================================
+// DOCASNA KARTICKA O OPRAVE CENY AKCE
+// ============================================
+// Kdyz admin pri zuctovani zmeni ceny, dorovna se rozdil tem, kdo se uz
+// vyuctovali sami. V historii konta to zustava navzdy, tady se to clenovi
+// jeste pripomene - 14 dni, nebo dokud neklikne na "Rozumim".
+const DNI_UPOZORNENI_NA_OPRAVU = 14;
+
+function klicSkrytychOprav() {
+  return 'nc_skryte_opravy_' + (state.currentUserId || 'x');
+}
+
+function nactiSkryteOpravy() {
+  try {
+    const raw = localStorage.getItem(klicSkrytychOprav());
+    const pole = raw ? JSON.parse(raw) : [];
+    return Array.isArray(pole) ? pole : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function mojeOpravyCen() {
+  const user = getCurrentUser();
+  if (!user) return [];
+  const hranice = Date.now() - DNI_UPOZORNENI_NA_OPRAVU * 24 * 60 * 60 * 1000;
+  const skryte = nactiSkryteOpravy();
+  return state.transactions.filter(t =>
+    t.memberId === user.id &&
+    t.type === 'event_adjustment' &&
+    t.amount !== 0 &&
+    new Date(t.createdAt).getTime() >= hranice &&
+    !skryte.includes(t.id)
+  );
+}
+
+function skryjOpravyCen() {
+  const ids = mojeOpravyCen().map(t => t.id);
+  try {
+    localStorage.setItem(klicSkrytychOprav(), JSON.stringify([...nactiSkryteOpravy(), ...ids]));
+  } catch (err) {
+    // Kdyz prohlizec uloziste nema, karticka se proste ukaze zase - nevadi.
+    console.warn('skryjOpravyCen:', err.message);
+  }
+  render();
+}
+
+function renderOpravyCen() {
+  const opravy = mojeOpravyCen();
+  if (opravy.length === 0) return '';
+
+  const soucet = opravy.reduce((s, t) => s + t.amount, 0);
+  const vraceno = soucet > 0;
+  const barva = vraceno
+    ? { ram: 'var(--green)', text: 'var(--green)' }
+    : { ram: 'var(--accent)', text: 'var(--accent)' };
+
+  return `
+    <div style="background:var(--paper);border:1.5px solid ${barva.ram};border-radius:12px;padding:14px;margin-bottom:16px;box-shadow:0 2px 10px rgba(0,0,0,0.08);">
+      <div style="font-weight:700;font-size:15px;color:${barva.text};margin-bottom:2px;">
+        ${vraceno ? '🎁 Vrátili jsme ti ' : '➕ Doúčtovali jsme ti '}${formatKc(Math.abs(soucet)).replace('+', '')}
+      </div>
+      <div style="font-size:12px;color:var(--ink-soft);line-height:1.5;">
+        ${opravy.map(t => `${t.description || 'Oprava ceny akce'} · ${formatDate(t.createdAt)}`).join('<br>')}
+      </div>
+      <button class="btn btn-secondary" style="width:100%;margin-top:10px;padding:8px;font-size:13px;"
+        onclick="skryjOpravyCen()">Rozumím</button>
+    </div>`;
+}
+
 function renderMember() {
   const user = getCurrentUser();
   const settings = getSettings();
@@ -2299,6 +2372,8 @@ function renderMember() {
       ` : ''}
       ${warning}
     </div>
+
+    ${renderOpravyCen()}
 
     ${(() => {
       // Vyzva k zaplaceni prispevku. Objevi se jen kdyz neni zaplaceno
@@ -2808,6 +2883,10 @@ function pocetLidi(n) {
   return n + ' lidí';
 }
 
+function pocetLidemDativ(n) {
+  return n === 1 ? '1 člověku' : n + ' lidem';
+}
+
 function pocetPrihlasenych(n) {
   if (n === 1) return '1 přihlášený';
   if (n >= 2 && n <= 4) return n + ' přihlášení';
@@ -3007,7 +3086,225 @@ async function adminSaveEventReg(eventId, memberId) {
   openEventDetail(eventId);
 }
 
+// Zuctovani akce. Po SQL kroku 14 nabidne jeste upravu cen a dopocita
+// rozdil tem, kdo se uz vyuctovali sami. Dokud krok 14 nebezel, chova se
+// to jako driv (zuctujAkciPoStaru nize).
 async function settleEvent(eventId) {
+  const e = getEvent(eventId);
+  if (!e || e.status === 'settled') return;
+
+  // Nahled nic nemeni - zaroven nam rekne, jestli uz funkce v databazi je.
+  const { error } = await db.rpc('settle_event', {
+    p_event_id: eventId,
+    p_price_acc: e.priceAccommodation || 0,
+    p_price_acc_reduced: e.priceAccommodationReduced || 0,
+    p_item_prices: SLOTY_POLOZEK.map(slot => e[slot.priceKey] || 0),
+    p_dry_run: true
+  });
+
+  if (error) {
+    const chybiFunkce = error.code === 'PGRST202'
+      || /settle_event/i.test(error.message || '')
+      || /does not exist/i.test(error.message || '');
+    if (chybiFunkce) {
+      state.settleReady = false;
+      console.warn('settle_event nedostupna (nebezel SQL krok 14?):', error.message);
+      return zuctujAkciPoStaru(eventId);
+    }
+    showDbError(error, 'Zúčtování se nepovedlo');
+    return;
+  }
+
+  state.settleReady = true;
+  openEventSettleDialog(eventId);
+}
+
+// Cenik z otevreneho formulare zuctovani.
+function cteniCenZuctovani(e) {
+  const cti = (id, vychozi) => {
+    const el = document.getElementById(id);
+    if (!el) return vychozi;
+    const v = parseInt(el.value);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  };
+  return {
+    acc: cti('zc-acc', e.priceAccommodation || 0),
+    accRed: cti('zc-acc-red', e.priceAccommodationReduced || 0),
+    polozky: SLOTY_POLOZEK.map(slot => cti(`zc-pol-${slot.i}`, e[slot.priceKey] || 0))
+  };
+}
+
+// Co zuctovani udela: komu se strhne a komu se opraví konto.
+function nahledZuctovani(e, ceny) {
+  const regs = state.eventRegistrations.filter(r => r.eventId === e.id);
+  const vychoziNoci = nociAkce(e);
+  const strzeni = [];
+  const opravy = [];
+
+  regs.forEach(r => {
+    const noci = r.nights ?? vychoziNoci;
+    const nova = noci * ceny.acc
+               + (r.nightsReduced || 0) * ceny.accRed
+               + SLOTY_POLOZEK.reduce((sum, slot, i) => sum + (r[slot.countKey] || 0) * (ceny.polozky[i] || 0), 0);
+
+    if (!r.settledAt) {
+      if (nova > 0) strzeni.push({ reg: r, castka: nova, zmena: -nova });
+    } else {
+      const rozdil = (r.settledAmount || 0) - nova;
+      if (rozdil !== 0) opravy.push({ reg: r, rozdil, nova, zmena: rozdil });
+    }
+  });
+
+  return {
+    strzeni, opravy,
+    sumStrzeni: strzeni.reduce((s, x) => s + x.castka, 0),
+    sumOprav: opravy.reduce((s, x) => s + x.rozdil, 0)
+  };
+}
+
+function openEventSettleDialog(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const maZvyhodnene = (e.priceAccommodationReduced || 0) > 0 || regs.some(r => (r.nightsReduced || 0) > 0);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="openEventDetail('${eventId}')">×</button>
+    <div class="modal-header">
+      <div class="modal-title">💰 Zúčtovat akci</div>
+      <div class="modal-subtitle">${e.name} · ${pocetPrihlasenych(regs.length)}</div>
+    </div>
+
+    <div class="section-title" style="margin:4px 0 2px;">Ceník</div>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">
+      Uprav, pokud to vyšlo jinak. Rozdíl se dorovná i těm, kdo se už vyúčtovali sami.
+    </div>
+
+    <div class="form-group">
+      <label>🏠 Ubytování (Kč/noc)</label>
+      <input type="number" id="zc-acc" min="0" max="100000" inputmode="numeric"
+        value="${e.priceAccommodation || 0}" oninput="prepocitejZuctovani('${eventId}')">
+    </div>
+
+    ${maZvyhodnene ? `
+      <div class="form-group">
+        <label>🧒 Ubytování zvýhodněné (Kč/noc)</label>
+        <input type="number" id="zc-acc-red" min="0" max="100000" inputmode="numeric"
+          value="${e.priceAccommodationReduced || 0}" oninput="prepocitejZuctovani('${eventId}')">
+      </div>` : ''}
+
+    ${polozkyAkce(e).map(polozka => `
+      <div class="form-group">
+        <label>${polozka.name} (Kč/ks)</label>
+        <input type="number" id="zc-pol-${polozka.i}" min="0" max="100000" inputmode="numeric"
+          value="${polozka.price}" oninput="prepocitejZuctovani('${eventId}')">
+      </div>`).join('')}
+
+    <div id="zc-nahled"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="openEventDetail('${eventId}')">Zrušit</button>
+      <button class="btn btn-primary" id="zc-submit" onclick="potvrditZuctovaniAkce('${eventId}')">Zúčtovat akci</button>
+    </div>
+  `);
+
+  prepocitejZuctovani(eventId);
+}
+
+function prepocitejZuctovani(eventId) {
+  const e = getEvent(eventId);
+  const el = document.getElementById('zc-nahled');
+  if (!e || !el) return;
+
+  const settings = getSettings();
+  const ceny = cteniCenZuctovani(e);
+  const n = nahledZuctovani(e, ceny);
+
+  const radek = (jmeno, castka, varovani) => `
+    <div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;">
+      <span>${jmeno}${varovani ? ' <span style="color:var(--accent);">⚠ dluh</span>' : ''}</span>
+      <strong class="${castka >= 0 ? 'positive' : 'negative'}">${formatKc(castka)}</strong>
+    </div>`;
+
+  const doDluhu = (memberId, zmena) =>
+    (recalcBalance(memberId) + zmena) < settings.debtLimit;
+
+  el.innerHTML = `
+    <div style="background:rgba(15,32,39,0.05);border-radius:10px;padding:12px 14px;margin:6px 0 2px;">
+      <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">
+        Co to udělá
+      </div>
+
+      <div style="display:flex;justify-content:space-between;gap:8px;">
+        <span>${n.strzeni.length === 0 ? 'Nikomu se nestrhává' : `${pocetLidemDativ(n.strzeni.length)} se strhne z konta`}</span>
+        <strong class="negative">${n.sumStrzeni ? formatKc(-n.sumStrzeni) : '0 Kč'}</strong>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px;">
+        <span>${n.opravy.length === 0 ? 'Změna cen se nikoho netýká' : `${pocetLidemDativ(n.opravy.length)} se opraví konto`}</span>
+        <strong class="${n.sumOprav >= 0 ? 'positive' : 'negative'}">${formatKc(n.sumOprav)}</strong>
+      </div>
+
+      ${n.opravy.length ? `
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;">
+          ${n.opravy.map(o => radek(
+            (getMember(o.reg.memberId) || {}).name || '?',
+            o.rozdil,
+            doDluhu(o.reg.memberId, o.zmena))).join('')}
+        </div>` : ''}
+
+      ${n.strzeni.length ? `
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;">
+          ${n.strzeni.map(x => radek(
+            (getMember(x.reg.memberId) || {}).name || '?',
+            -x.castka,
+            doDluhu(x.reg.memberId, x.zmena))).join('')}
+        </div>` : ''}
+    </div>
+  `;
+}
+
+async function potvrditZuctovaniAkce(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  const ceny = cteniCenZuctovani(e);
+  const n = nahledZuctovani(e, ceny);
+
+  const vzkaz = [
+    `Zúčtovat akci „${e.name}"?`,
+    '',
+    n.strzeni.length ? `${pocetLidemDativ(n.strzeni.length)} se strhne celkem ${n.sumStrzeni} Kč.` : 'Nikomu se nic nestrhává.',
+    n.opravy.length ? `${pocetLidemDativ(n.opravy.length)} z těch, co se vyúčtovali sami, se opraví konto o ${n.sumOprav} Kč.` : ''
+  ].filter(Boolean).join('\n');
+
+  if (!confirm(vzkaz)) return;
+
+  const btn = document.getElementById('zc-submit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Zúčtovávám…'; }
+
+  const { data, error } = await db.rpc('settle_event', {
+    p_event_id: eventId,
+    p_price_acc: ceny.acc,
+    p_price_acc_reduced: ceny.accRed,
+    p_item_prices: ceny.polozky,
+    p_dry_run: false
+  });
+
+  if (error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Zúčtovat akci'; }
+    showDbError(error, 'Zúčtování se nepovedlo');
+    return;
+  }
+
+  await loadAllData();
+  closeModal();
+  const opraveno = data && data.adjusted_count ? ` · ${pocetLidi(data.adjusted_count)} dostalo opravu konta` : '';
+  showToast(`✓ Akce zúčtována${opraveno}`);
+  render();
+}
+
+async function zuctujAkciPoStaru(eventId) {
   const e = getEvent(eventId);
   if (!e || e.status === 'settled') return;
   const vsechny = state.eventRegistrations.filter(r => r.eventId === eventId);
@@ -4176,9 +4473,13 @@ function renderHistoryItem(tx) {
     cash_withdrawal: '💵 Hotovostní výběr',
     bank_withdrawal: '🏦 Bankovní výběr',
     correction: '✎ Ruční korekce',
+    event_charge: '🏕️ Akce',
     initial_balance: 'Počáteční stav'
   };
   let desc = typeLabels[tx.type] || tx.type;
+  if (tx.type === 'event_adjustment') {
+    desc = tx.amount >= 0 ? '🎁 Sleva z akce' : '➕ Doúčtování akce';
+  }
   if (tx.trainingId) {
     const t = getTraining(tx.trainingId);
     if (t) desc = `🧗 ${t.venue} (${formatTrainingDate(t.datetime)})`;
