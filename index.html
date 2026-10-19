@@ -134,6 +134,20 @@
     border-radius: 12px; padding: 14px; margin-bottom: 16px;
   }
   .fee-cta .fee-cta-title { font-weight: 700; font-size: 15px; margin-bottom: 2px; }
+
+  .tip-wrap { position: relative; display: flex; }
+  .tip-bubble {
+    display: none; position: absolute; top: calc(100% + 8px); left: 0; right: 0;
+    background: var(--ink); color: var(--paper);
+    font-size: 11.5px; line-height: 1.4; font-weight: 400; text-align: left;
+    padding: 9px 11px; border-radius: 8px; z-index: 60;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.28);
+  }
+  .tip-bubble::after {
+    content: ''; position: absolute; bottom: 100%; left: 24px;
+    border: 6px solid transparent; border-bottom-color: var(--ink);
+  }
+  .tip-wrap:hover .tip-bubble, .tip-wrap.open .tip-bubble { display: block; }
   .fee-cta .fee-cta-sub { font-size: 12px; color: var(--ink-soft); margin-bottom: 10px; }
 
   .admin-badge {
@@ -742,6 +756,7 @@ const state = {
   paymentClaims: [],
   membershipFees: [],
   feesReady: false,
+  itemsReady: false,
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
@@ -885,6 +900,10 @@ async function loadAllData() {
       priceAccommodationReduced: e.price_accommodation_reduced || 0,
       beer1Name: e.beer1_name || '', beer1Price: e.beer1_price || 0,
       beer2Name: e.beer2_name || '', beer2Price: e.beer2_price || 0,
+      item3Name: e.item3_name || '', item3Price: e.item3_price || 0,
+      item4Name: e.item4_name || '', item4Price: e.item4_price || 0,
+      item5Name: e.item5_name || '', item5Price: e.item5_price || 0,
+      item6Name: e.item6_name || '', item6Price: e.item6_price || 0,
       status: e.status || 'open', createdAt: e.created_at
     }));
 
@@ -895,6 +914,8 @@ async function loadAllData() {
     state.eventRegistrations = (erData || []).map(r => ({
       id: r.id, eventId: r.event_id, memberId: r.member_id,
       beer1Count: r.beer1_count || 0, beer2Count: r.beer2_count || 0,
+      item3Count: r.item3_count || 0, item4Count: r.item4_count || 0,
+      item5Count: r.item5_count || 0, item6Count: r.item6_count || 0,
       nights: r.nights || null,
       nightsReduced: r.nights_reduced || 0,
       settledAt: r.settled_at, settledAmount: r.settled_amount,
@@ -920,6 +941,7 @@ async function loadAllData() {
     // Kdyz SQL krok11 jeste nebezel, tabulka neexistuje - appka pak jen
     // schova razitka a filtry a chova se jako pred zmenou.
     await nactiPrispevky();
+    await zjistiPolozky();
 
     // Event rides
     const { data: ridesData, error: riErr } = await db
@@ -1080,6 +1102,13 @@ async function saveEvent(event) {
     price_accommodation_reduced: event.priceAccommodationReduced || 0,
     beer1_name: event.beer1Name || '', beer1_price: event.beer1Price || 0,
     beer2_name: event.beer2Name || '', beer2_price: event.beer2Price || 0,
+    // sloupce polozek 3-6 existuji teprve po SQL kroku 12
+    ...(state.itemsReady ? {
+      item3_name: event.item3Name || '', item3_price: event.item3Price || 0,
+      item4_name: event.item4Name || '', item4_price: event.item4Price || 0,
+      item5_name: event.item5Name || '', item5_price: event.item5Price || 0,
+      item6_name: event.item6Name || '', item6_price: event.item6Price || 0
+    } : {}),
     status: event.status || 'open'
   });
   if (error) { console.error('saveEvent:', error); showDbError(error, 'Akci se nepodařilo uložit'); return false; }
@@ -1090,6 +1119,10 @@ async function saveEventRegistration(reg) {
   const { error } = await db.from('event_registrations').upsert({
     id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
     beer1_count: reg.beer1Count || 0, beer2_count: reg.beer2Count || 0,
+    ...(state.itemsReady ? {
+      item3_count: reg.item3Count || 0, item4_count: reg.item4Count || 0,
+      item5_count: reg.item5Count || 0, item6_count: reg.item6Count || 0
+    } : {}),
     arrival_datetime: reg.arrivalDatetime || null
   });
   if (error) { console.error('saveEventReg:', error); showToast('Chyba ukládání přihlášky'); }
@@ -1757,6 +1790,16 @@ function maZaplacenyPrispevek(memberId, rok) {
 // Stav formulare platby. Prispevek a dobiti jdou zaskrtnout oba naraz.
 let payForm = { fee: false, feeType: 'full', topup: false };
 
+// Kdo ma pravo na zvyhodneny prispevek. Ukazuje se v bublince na hover
+// a po kliknuti na "pro koho?" (kvuli mobilu, kde hover neexistuje).
+const TEXT_ZVYHODNENY = 'Zvýhodněný příspěvek je pro studenty, nezaměstnané, členy, kteří bydlí dál než 100 km od Prahy, a pro jednoho rodiče na rodičovské.';
+
+function prepniNapovedu(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('open');
+}
+
 function popisCekajiciPlatby(c) {
   const fee = c.feeAmount || 0;
   const top = c.topupAmount || 0;
@@ -1839,15 +1882,22 @@ function openPaymentDialog(predvybrano) {
             onclick="togglePrispevek()" style="text-align:left;padding:12px 14px;">
             🎫 Roční příspěvek ${popisSezony(sezona)}
           </button>
-          <div id="pay-fee-rates" style="display:${payForm.fee ? 'flex' : 'none'};gap:8px;padding-left:12px;">
+          <div id="pay-fee-rates" style="display:${payForm.fee ? 'flex' : 'none'};gap:8px;padding-left:12px;align-items:stretch;">
             <button class="btn-choice${payForm.feeType === 'full' ? ' selected' : ''}" data-fee="full"
               onclick="vyberSazbu('full')" style="flex:1;padding:10px;font-size:13px;">
               Plný<br><strong>${settings.feeFull} Kč</strong>
             </button>
-            <button class="btn-choice${payForm.feeType === 'reduced' ? ' selected' : ''}" data-fee="reduced"
-              onclick="vyberSazbu('reduced')" style="flex:1;padding:10px;font-size:13px;">
-              Zvýhodněný<br><strong>${settings.feeReduced} Kč</strong>
-            </button>
+            <div class="tip-wrap" id="tip-reduced" style="flex:1.6;">
+              <div class="tip-bubble">${TEXT_ZVYHODNENY}</div>
+              <button class="btn-choice${payForm.feeType === 'reduced' ? ' selected' : ''}" data-fee="reduced"
+                onclick="vyberSazbu('reduced')" style="width:100%;padding:12px 10px;font-size:13px;line-height:1.35;">
+                Zvýhodněný<br><strong>${settings.feeReduced} Kč</strong><br>
+                <span onclick="event.stopPropagation(); prepniNapovedu('tip-reduced');"
+                  style="font-size:11px;color:var(--ink-soft);text-decoration:underline;cursor:help;">
+                  pro koho? ⓘ
+                </span>
+              </button>
+            </div>
           </div>
         `}
 
@@ -2478,15 +2528,31 @@ function openEventForm(editId) {
         Pro děti nebo pro ty, co spí ve vlastním stanu. Nech prázdné, pokud se u téhle akce nerozlišuje.
       </div>
     </div>
-    <div class="section-title" style="margin: 16px 0 8px;">Piva</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-      <div class="form-group" style="margin:0;"><label>Název piva 1</label><input type="text" id="ev-b1name" placeholder="Kozel 10°" value="${editing ? editing.beer1Name : ''}"></div>
-      <div class="form-group" style="margin:0;"><label>Cena piva 1 (Kč)</label><input type="number" id="ev-b1price" placeholder="45" min="0" value="${editing ? editing.beer1Price : ''}"></div>
+    <div class="section-title" style="margin: 16px 0 4px;">Položky k objednání</div>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+      Pivo, limonáda, víno, snídaně… Co nevyplníš, se u akce vůbec nezobrazí.
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-      <div class="form-group" style="margin:0;"><label>Název piva 2</label><input type="text" id="ev-b2name" placeholder="Bernard 12°" value="${editing ? editing.beer2Name : ''}"></div>
-      <div class="form-group" style="margin:0;"><label>Cena piva 2 (Kč)</label><input type="number" id="ev-b2price" placeholder="55" min="0" value="${editing ? editing.beer2Price : ''}"></div>
-    </div>
+    ${PREDLOHY_POLOZEK.slice(0, POCET_SLOTU_POLOZEK()).map((predloha, idx) => {
+      const slot = SLOTY_POLOZEK[idx];
+      const nazev = editing ? (editing[slot.nameKey] || '') : '';
+      const cena = editing && editing[slot.priceKey] ? editing[slot.priceKey] : '';
+      return `
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:8px;">
+          <div class="form-group" style="margin:0;">
+            <label>${idx + 1}. položka – název</label>
+            <input type="text" id="ev-pol${slot.i}-name" placeholder="${predloha.nazev}" value="${escapeAttr(nazev)}">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Cena (Kč)</label>
+            <input type="number" id="ev-pol${slot.i}-price" placeholder="${predloha.cena}" min="0" value="${cena}">
+          </div>
+        </div>`;
+    }).join('')}
+    ${state.itemsReady ? '' : `
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+        Další položky naskočí, až admin pustí SQL krok 12.
+      </div>
+    `}
     <div class="form-actions">
       ${editing ? `<button class="btn btn-danger" onclick="deleteEvent('${editing.id}')">Smazat</button>` : ''}
       <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
@@ -2503,18 +2569,22 @@ async function saveEventForm(editId) {
   const end = document.getElementById('ev-end').value;
   const acc = parseInt(document.getElementById('ev-acc').value) || 0;
   const accRed = parseInt(document.getElementById('ev-acc-red').value) || 0;
-  const b1name = document.getElementById('ev-b1name').value.trim();
-  const b1price = parseInt(document.getElementById('ev-b1price').value) || 0;
-  const b2name = document.getElementById('ev-b2name').value.trim();
-  const b2price = parseInt(document.getElementById('ev-b2price').value) || 0;
+  // polozky 1..6 (co je prazdne, zustane prazdne a nikde se neukaze)
+  const polozky = {};
+  SLOTY_POLOZEK.forEach(slot => {
+    const nazev = (document.getElementById(`ev-pol${slot.i}-name`)?.value || '').trim();
+    const cena = parseInt(document.getElementById(`ev-pol${slot.i}-price`)?.value) || 0;
+    polozky[slot.nameKey] = nazev;
+    polozky[slot.priceKey] = nazev ? cena : 0;
+  });
   if (!name || !venue || !start || !end) { showToast('Vyplň název, místo, začátek a konec'); return; }
   if (new Date(end) <= new Date(start)) { showToast('Konec musí být po začátku'); return; }
   let event;
   if (editId) {
     event = getEvent(editId);
-    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price });
+    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed }, polozky);
   } else {
-    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price, status: 'open', createdAt: new Date().toISOString() };
+    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, ...polozky, status: 'open', createdAt: new Date().toISOString() };
     state.events.push(event);
   }
   const ulozeno = await saveEvent(event);
@@ -2546,8 +2616,6 @@ function openEventDetail(eventId) {
   if (!e) return;
   const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
   const nights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
-  const totalBeer1 = regs.reduce((s,r) => s + (r.beer1Count||0), 0);
-  const totalBeer2 = regs.reduce((s,r) => s + (r.beer2Count||0), 0);
 
   // Filtr: koho je potreba zuctovat rucne (kdo si to neudelal sam)
   const filtrReg = state.ui.eventRegFilter || 'all';
@@ -2564,6 +2632,7 @@ function openEventDetail(eventId) {
     </div>
     <div class="quick-actions">
       <button onclick="openEventForm('${e.id}')">✎ Upravit</button>
+      <button onclick="openEventSummary('${e.id}')">📊 Přehled</button>
       ${e.status !== 'settled' ? `<button onclick="settleEvent('${e.id}')" style="background:var(--ink);color:white;">💰 Zúčtovat</button>` : '<span class="status-badge settled">Zúčtováno</span>'}
     </div>
     <div class="section-title" style="margin-top:12px;">Přihlášení (${regs.length})</div>
@@ -2581,16 +2650,15 @@ function openEventDetail(eventId) {
       : (vypis.length === 0 ? `<div class="empty-msg" style="padding:12px;">${filtrReg === 'unsettled' ? 'Všichni se zúčtovali sami. 👏' : 'Nikdo se sám nezúčtoval.'}</div>`
       : `<ul style="list-style:none;">${vypis.map(r => {
       const m = getMember(r.memberId); if (!m) return '';
-      const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+      const defaultNights = nociAkce(e);
       const rNights = r.nights ?? defaultNights;
-      const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
+      const beers = popisSpotreby(e, r);
       const arr = r.arrivalDatetime ? `příjezd ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
       const updatedBadge = r.updatedAt && r.updatedAt !== r.createdAt
         ? `<span style="font-size:10px;background:#fff3cd;color:#856404;padding:2px 6px;border-radius:10px;margin-left:4px;">Upraveno ${new Date(r.updatedAt).toLocaleString('cs-CZ',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}</span>`
         : '';
       const rNightsRed = r.nightsReduced || 0;
-      const total = rNights*e.priceAccommodation + rNightsRed*(e.priceAccommodationReduced||0)
-                  + (r.beer1Count||0)*e.beer1Price + (r.beer2Count||0)*e.beer2Price;
+      const total = cenaPrihlasky(e, r, rNights);
       return `<li class="attendee" style="align-items:flex-start;padding:10px 0;">
         <div class="member-avatar" style="margin-top:2px;">${getInitials(m.name)}</div>
         <div style="flex:1;">
@@ -2604,9 +2672,13 @@ function openEventDetail(eventId) {
     }).join('')}</ul>`)}
     <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px;margin-top:12px;font-size:13px;">
       <strong>Shrnutí:</strong><br>
-      ${e.beer1Name?`${e.beer1Name}: ${totalBeer1} ks · `:''}${e.beer2Name?`${e.beer2Name}: ${totalBeer2} ks`:''}${(e.beer1Name||e.beer2Name)?'<br>':''}
-      Ubytování: individuální dle člena (viz výše)
+      ${polozkyAkce(e).map(polozka =>
+        `${polozka.name}: ${regs.reduce((sum, r) => sum + pocetPolozky(r, polozka), 0)} ks`).join(' · ') || 'Bez položek'}<br>
+      Ubytování: individuálně dle člena (viz výše)
     </div>
+    <button class="btn btn-secondary" style="width:100%;margin-top:10px;" onclick="openEventSummary('${e.id}')">
+      📊 Přehled vyúčtování po položkách →
+    </button>
   `;
   openModal(html);
 }
@@ -2614,6 +2686,157 @@ function openEventDetail(eventId) {
 function setEventRegFilter(f, eventId) {
   state.ui.eventRegFilter = f;
   openEventDetail(eventId);
+}
+
+// ============================================
+// PREHLED VYUCTOVANI AKCE
+// ============================================
+// Kolik se na akci vybralo po polozkach: ubytovani plne a zvyhodnene
+// plus vsech sest polozek. Pocty se berou z prihlasek - u toho, kdo se
+// vyuctoval sam, jsou to cisla, ktera sam potvrdil.
+
+function pocetLidi(n) {
+  if (n === 1) return '1 člověk';
+  if (n >= 2 && n <= 4) return n + ' lidi';
+  return n + ' lidí';
+}
+
+function pocetPrihlasenych(n) {
+  if (n === 1) return '1 přihlášený';
+  if (n >= 2 && n <= 4) return n + ' přihlášení';
+  return n + ' přihlášených';
+}
+
+function prehledAkce(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return null;
+  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const vychoziNoci = nociAkce(e);
+
+  const radky = [];
+  const noci = regs.reduce((sum, r) => sum + (r.nights ?? vychoziNoci), 0);
+  radky.push({ nazev: '🏠 Ubytování', jednotka: 'nocí', pocet: noci, cena: e.priceAccommodation || 0 });
+
+  const nociZvyh = regs.reduce((sum, r) => sum + (r.nightsReduced || 0), 0);
+  if ((e.priceAccommodationReduced || 0) > 0 || nociZvyh > 0) {
+    radky.push({ nazev: '🧒 Ubytování zvýhodněné', jednotka: 'nocí', pocet: nociZvyh, cena: e.priceAccommodationReduced || 0 });
+  }
+
+  polozkyAkce(e).forEach(polozka => {
+    radky.push({
+      nazev: polozka.name,
+      jednotka: 'ks',
+      pocet: regs.reduce((sum, r) => sum + pocetPolozky(r, polozka), 0),
+      cena: polozka.price
+    });
+  });
+
+  radky.forEach(r => { r.celkem = r.pocet * r.cena; });
+  const celkem = radky.reduce((sum, r) => sum + r.celkem, 0);
+
+  const sami = regs.filter(r => r.settledAt);
+  const samiKc = sami.reduce((sum, r) => sum + (r.settledAmount || 0), 0);
+  const zbyva = regs.filter(r => !r.settledAt);
+  const zbyvaKc = zbyva.reduce((sum, r) => sum + cenaPrihlasky(e, r), 0);
+
+  return { e, regs, radky, celkem, sami, samiKc, zbyva, zbyvaKc };
+}
+
+function openEventSummary(eventId) {
+  const d = prehledAkce(eventId);
+  if (!d) return;
+  const { e, regs, radky, celkem, sami, samiKc, zbyva, zbyvaKc } = d;
+  const rozdil = celkem - (samiKc + zbyvaKc);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">📊 Přehled vyúčtování</div>
+      <div class="modal-subtitle">${e.name} · ${formatEventDateFull(e.startDatetime)} – ${formatEventDateFull(e.endDatetime)}<br>${pocetPrihlasenych(regs.length)}</div>
+    </div>
+
+    ${regs.length === 0 ? '<div class="empty-msg" style="padding:16px;">Na akci nikdo není přihlášený, není co počítat.</div>' : `
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr style="text-align:left;color:var(--ink-soft);font-size:11px;text-transform:uppercase;letter-spacing:0.04em;">
+              <th style="padding:6px 4px;">Položka</th>
+              <th style="padding:6px 4px;text-align:right;">Počet</th>
+              <th style="padding:6px 4px;text-align:right;">Cena</th>
+              <th style="padding:6px 4px;text-align:right;">Celkem</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${radky.map(r => `
+              <tr style="border-top:1px solid var(--line);${r.pocet === 0 ? 'color:var(--ink-soft);' : ''}">
+                <td style="padding:8px 4px;">${r.nazev}</td>
+                <td style="padding:8px 4px;text-align:right;white-space:nowrap;">${r.pocet} ${r.jednotka}</td>
+                <td style="padding:8px 4px;text-align:right;white-space:nowrap;">${r.cena} Kč</td>
+                <td style="padding:8px 4px;text-align:right;font-weight:700;white-space:nowrap;">${r.celkem} Kč</td>
+              </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr style="border-top:2px solid var(--ink);">
+              <td colspan="3" style="padding:10px 4px;font-weight:800;">CELKEM</td>
+              <td style="padding:10px 4px;text-align:right;font-weight:800;font-size:16px;white-space:nowrap;">${celkem} Kč</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:13px;">
+        <div style="display:flex;justify-content:space-between;gap:10px;">
+          <span>🧾 Vyúčtovali se sami</span>
+          <strong>${samiKc} Kč${sami.length ? ` · ${pocetLidi(sami.length)}` : ''}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:10px;margin-top:4px;">
+          <span>${e.status === 'settled' ? '✓ Zúčtoval admin' : '⏳ Zbývá zúčtovat'}</span>
+          <strong>${zbyvaKc} Kč${zbyva.length ? ` · ${pocetLidi(zbyva.length)}` : ''}</strong>
+        </div>
+        ${rozdil !== 0 ? `
+          <div style="margin-top:8px;font-size:12px;color:var(--warning);">
+            Pozor: součty se liší o ${rozdil} Kč. Někdo se vyúčtoval dřív, než se změnily ceny akce – platí, co už má odepsané z konta.
+          </div>` : ''}
+      </div>
+
+      ${zbyva.length ? `
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:10px;">
+          Nezúčtovaní: ${zbyva.map(r => (getMember(r.memberId) || {}).name || '?').join(', ')}
+        </div>` : ''}
+
+      <div class="form-actions" style="flex-direction:column;gap:8px;margin-top:14px;">
+        <button class="btn btn-secondary" style="width:100%;" onclick="kopirujPrehledAkce('${e.id}')">
+          📋 Kopírovat přehled jako text
+        </button>
+        <button class="btn btn-secondary" style="width:100%;" onclick="openEventDetail('${e.id}')">Zpět na akci</button>
+      </div>
+    `}
+  `);
+}
+
+function kopirujPrehledAkce(eventId) {
+  const d = prehledAkce(eventId);
+  if (!d) return;
+  const radky = d.radky.map(r => `${r.nazev}: ${r.pocet} ${r.jednotka} × ${r.cena} Kč = ${r.celkem} Kč`);
+  const text = [
+    `${d.e.name} – přehled vyúčtování`,
+    pocetPrihlasenych(d.regs.length),
+    '',
+    ...radky,
+    '',
+    `CELKEM: ${d.celkem} Kč`,
+    `Vyúčtovali se sami: ${d.samiKc} Kč (${pocetLidi(d.sami.length)})`,
+    `Zbývá zúčtovat: ${d.zbyvaKc} Kč (${pocetLidi(d.zbyva.length)})`
+  ].join('\n');
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast('✓ Přehled ve schránce'))
+      .catch(() => showToast('Kopírování nevyšlo'));
+  } else {
+    showToast('Kopírování v tomhle prohlížeči nejde');
+  }
 }
 
 function adminEditEventReg(eventId, memberId) {
@@ -2625,7 +2848,6 @@ function adminEditEventReg(eventId, memberId) {
   const nights = reg.nights ?? defaultNights;
   const nightsRed = reg.nightsReduced || 0;
   const maRedukovanou = (e.priceAccommodationReduced || 0) > 0;
-  const b1 = reg.beer1Count||0, b2 = reg.beer2Count||0;
 
   const html = `
     <div class="modal-handle"></div>
@@ -2654,8 +2876,7 @@ function adminEditEventReg(eventId, memberId) {
       </div>
     </div>
     ` : ''}
-    ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
-    ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
+    ${polozkyAkce(e).map(polozka => polozkaCounterHtml(polozka, pocetPolozky(reg, polozka), 'pol')).join('')}
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="openEventDetail('${eventId}')">Zpět</button>
       <button class="btn btn-primary" onclick="adminSaveEventReg('${eventId}','${memberId}')">Uložit</button>
@@ -2667,8 +2888,9 @@ function adminEditEventReg(eventId, memberId) {
 async function adminSaveEventReg(eventId, memberId) {
   const reg = state.eventRegistrations.find(r => r.eventId===eventId && r.memberId===memberId);
   if (!reg) return;
-  reg.beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
-  reg.beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
+  const e = getEvent(eventId);
+  const pocty = cteniPolozek(e, 'pol');
+  SLOTY_POLOZEK.forEach((slot, idx) => { reg[slot.countKey] = pocty[idx]; });
   reg.nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
   reg.nightsReduced = parseInt(document.getElementById('nights-red-cnt')?.dataset.count||'0');
   reg.updatedAt = new Date().toISOString();
@@ -2690,23 +2912,22 @@ async function settleEvent(eventId) {
     `${regs.length} lidem se odečtou náklady z konta.` +
     (jizVyuctovano > 0 ? `\n${jizVyuctovano} se už vyúčtovalo sám/sama – těm se nic neodečte.` : '')
   )) return;
-  const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  const defaultNights = nociAkce(e);
   let count = 0;
   for (const reg of regs) {
     const nights = reg.nights ?? defaultNights;  // použij individuální počet nocí
     const nightsRed = reg.nightsReduced || 0;
     const accCost = nights * e.priceAccommodation;
     const accRedCost = nightsRed * (e.priceAccommodationReduced || 0);
-    const beer1Cost = (reg.beer1Count||0) * e.beer1Price;
-    const beer2Cost = (reg.beer2Count||0) * e.beer2Price;
-    const total = accCost + accRedCost + beer1Cost + beer2Cost;
+    const total = cenaPrihlasky(e, reg, nights);
     if (total === 0) { count++; continue; }
     const desc = [
       `Akce: ${e.name}`,
       accCost>0?`ubyt. ${nights} nocí × ${e.priceAccommodation} Kč = ${accCost} Kč`:'',
       accRedCost>0?`zvýhodněné ${nightsRed} nocí × ${e.priceAccommodationReduced} Kč = ${accRedCost} Kč`:'',
-      beer1Cost>0?`${reg.beer1Count}× ${e.beer1Name} ${beer1Cost} Kč`:'',
-      beer2Cost>0?`${reg.beer2Count}× ${e.beer2Name} ${beer2Cost} Kč`:''
+      ...polozkyAkce(e)
+        .filter(polozka => pocetPolozky(reg, polozka) > 0)
+        .map(polozka => `${pocetPolozky(reg, polozka)}× ${polozka.name} ${pocetPolozky(reg, polozka) * polozka.price} Kč`)
     ].filter(Boolean).join(', ');
     await addTransaction({ memberId: reg.memberId, amount: -total, type: 'event_charge', description: desc, createdBy: state.currentUserId });
     count++;
@@ -2733,11 +2954,13 @@ function renderMemberEvents() {
 // Po skonceni akce si kazdy sam potvrdi, co doopravdy spotreboval.
 // Castku prepocita databaze z cen akce; tady jen ukazujeme nahled.
 
-function spocitejUtratu(e, noci, nociZvyh, pivo1, pivo2) {
+// pocty = pole sesti cisel (polozka 1..6), stejne jako to ceka databaze
+function spocitejUtratu(e, noci, nociZvyh, pocty) {
+  const zaPolozky = SLOTY_POLOZEK.reduce((sum, slot, idx) =>
+    sum + (pocty[idx] || 0) * (e[slot.priceKey] || 0), 0);
   return noci * (e.priceAccommodation || 0)
        + nociZvyh * (e.priceAccommodationReduced || 0)
-       + pivo1 * (e.beer1Price || 0)
-       + pivo2 * (e.beer2Price || 0);
+       + zaPolozky;
 }
 
 function openEventSettlement(eventId) {
@@ -2747,10 +2970,9 @@ function openEventSettlement(eventId) {
   if (myReg.settledAt) { showToast('Tuhle akci už máš vyúčtovanou'); return; }
 
   const maZvyhodnenou = (e.priceAccommodationReduced || 0) > 0;
-  const n  = myReg.nights ?? Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  const n  = myReg.nights ?? nociAkce(e);
   const nz = myReg.nightsReduced || 0;
-  const b1 = myReg.beer1Count || 0;
-  const b2 = myReg.beer2Count || 0;
+  const pocty = poctyZPrihlasky(myReg);
 
   openModal(`
     <div class="modal-handle"></div>
@@ -2786,29 +3008,11 @@ function openEventSettlement(eventId) {
       </div>
     </div>` : ''}
 
-    ${e.beer1Name ? `
-    <div class="form-group">
-      <label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label>
-      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
-        <button onclick="adjSettle('set-b1', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
-        <span id="set-b1" data-count="${b1}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span>
-        <button onclick="adjSettle('set-b1', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
-      </div>
-    </div>` : ''}
-
-    ${e.beer2Name ? `
-    <div class="form-group">
-      <label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label>
-      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
-        <button onclick="adjSettle('set-b2', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
-        <span id="set-b2" data-count="${b2}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span>
-        <button onclick="adjSettle('set-b2', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
-      </div>
-    </div>` : ''}
+    ${polozkyAkce(e).map(polozka => polozkaCounterHtml(polozka, pocty[polozka.i - 1], 'set-pol')).join('')}
 
     <div id="settle-summary" style="background:rgba(15,32,39,0.05);border-radius:10px;padding:14px;margin:14px 0;">
       <div style="font-size:13px;color:var(--ink-soft);">Celkem k odečtení</div>
-      <div id="settle-total" style="font-size:26px;font-weight:800;">${spocitejUtratu(e, n, nz, b1, b2)} Kč</div>
+      <div id="settle-total" style="font-size:26px;font-weight:800;">${spocitejUtratu(e, n, nz, pocty)} Kč</div>
       <div id="settle-breakdown" style="font-size:12px;color:var(--ink-soft);margin-top:4px;"></div>
     </div>
 
@@ -2832,12 +3036,12 @@ function adjSettle(id, delta) {
 }
 
 function cteniVyuctovani() {
-  const dej = id => parseInt(document.getElementById(id)?.dataset.count || '0');
+  const dej = id => parseInt(document.getElementById(id)?.dataset.count || '0') || 0;
+  const e = getEventFromSettleForm();
   return {
     noci: dej('set-nights'),
     nociZvyh: dej('set-nights-red'),
-    pivo1: dej('set-b1'),
-    pivo2: dej('set-b2')
+    pocty: cteniPolozek(e, 'set-pol')
   };
 }
 
@@ -2845,7 +3049,7 @@ function prepocitejVyuctovani() {
   const e = getEventFromSettleForm();
   if (!e) return;
   const v = cteniVyuctovani();
-  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pivo1, v.pivo2);
+  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pocty);
 
   const totalEl = document.getElementById('settle-total');
   if (totalEl) totalEl.textContent = celkem + ' Kč';
@@ -2853,8 +3057,9 @@ function prepocitejVyuctovani() {
   const rozpis = [
     v.noci > 0 ? `${v.noci}× nocleh ${e.priceAccommodation} Kč` : '',
     v.nociZvyh > 0 ? `${v.nociZvyh}× zvýhodněná noc ${e.priceAccommodationReduced} Kč` : '',
-    v.pivo1 > 0 ? `${v.pivo1}× ${e.beer1Name} ${e.beer1Price} Kč` : '',
-    v.pivo2 > 0 ? `${v.pivo2}× ${e.beer2Name} ${e.beer2Price} Kč` : ''
+    ...polozkyAkce(e)
+      .filter(polozka => v.pocty[polozka.i - 1] > 0)
+      .map(polozka => `${v.pocty[polozka.i - 1]}× ${polozka.name} ${polozka.price} Kč`)
   ].filter(Boolean).join(' + ');
   const rozpisEl = document.getElementById('settle-breakdown');
   if (rozpisEl) rozpisEl.textContent = rozpis || 'Nic jsi nespotřeboval/a – odečte se nula.';
@@ -2874,7 +3079,7 @@ function getEventFromSettleForm() {
 async function potvrditVyuctovani(eventId) {
   const v = cteniVyuctovani();
   const e = getEvent(eventId);
-  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pivo1, v.pivo2);
+  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pocty);
 
   if (!confirm(celkem > 0
       ? `Opravdu potvrdit? Z konta se ti odečte ${celkem} Kč a změnit to půjde už jen přes admina.`
@@ -2883,13 +3088,21 @@ async function potvrditVyuctovani(eventId) {
   const btn = document.getElementById('settle-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Potvrzuji…'; }
 
-  const { data, error } = await db.rpc('settle_my_event_registration', {
-    p_event_id: eventId,
-    p_nights: v.noci,
-    p_nights_reduced: v.nociZvyh,
-    p_beer1: v.pivo1,
-    p_beer2: v.pivo2
-  });
+  // Po SQL kroku 12 posilame vsech sest poctu v poli; bez nej stara podoba.
+  const { data, error } = state.itemsReady
+    ? await db.rpc('settle_my_event_registration', {
+        p_event_id: eventId,
+        p_nights: v.noci,
+        p_nights_reduced: v.nociZvyh,
+        p_counts: v.pocty
+      })
+    : await db.rpc('settle_my_event_registration', {
+        p_event_id: eventId,
+        p_nights: v.noci,
+        p_nights_reduced: v.nociZvyh,
+        p_beer1: v.pocty[0],
+        p_beer2: v.pocty[1]
+      });
 
   if (error) {
     if (btn) { btn.disabled = false; prepocitejVyuctovani(); }
@@ -2918,15 +3131,15 @@ function renderEventCard(e) {
         </div>
         ${e.status==='settled'?'<span class="status-badge settled">Zúčtováno</span>':''}
       </div>
-      <div style="display:grid;grid-template-columns:repeat(${[1, e.beer1Name?1:0, e.beer2Name?1:0].filter(Boolean).length},1fr);gap:6px;margin-bottom:12px;font-size:13px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:12px;font-size:13px;">
         <div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🏠 Ubytování<br><strong>${e.priceAccommodation} Kč/noc</strong><br><span style="color:var(--ink-soft)">${nights} nocí = ${nights*e.priceAccommodation} Kč</span></div>
-        ${e.beer1Name?`<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🍺 ${e.beer1Name}<br><strong>${e.beer1Price} Kč/ks</strong></div>`:''}
-        ${e.beer2Name?`<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🍺 ${e.beer2Name}<br><strong>${e.beer2Price} Kč/ks</strong></div>`:''}
+        ${polozkyAkce(e).map(polozka =>
+          `<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">${polozka.name}<br><strong>${polozka.price} Kč/ks</strong></div>`).join('')}
       </div>
       ${myReg?`
         <div style="background:rgba(26,95,90,0.08);border:1.5px solid rgba(26,95,90,0.25);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
           <div style="font-weight:700;color:var(--primary);margin-bottom:4px;">✓ Přihlášen/a</div>
-          <div style="font-size:13px;color:var(--ink-soft);">${[e.beer1Name&&myReg.beer1Count>0?`${myReg.beer1Count}× ${e.beer1Name}`:'', e.beer2Name&&myReg.beer2Count>0?`${myReg.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(' · ')}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
+          <div style="font-size:13px;color:var(--ink-soft);">${popisSpotreby(e, myReg)}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
           ${myReg.settledAt ? `
             <div style="margin-top:8px;font-size:13px;font-weight:600;color:var(--primary);">
               🧾 Vyúčtováno · odečteno ${myReg.settledAmount || 0} Kč
@@ -2971,7 +3184,6 @@ function openEventRegistration(eventId) {
   const e = getEvent(eventId); if (!e) return;
   const myReg = getMyEventReg(eventId);
   const maxNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
-  const b1 = myReg?myReg.beer1Count:0, b2 = myReg?myReg.beer2Count:0;
   // Kdyz clovek jeste prijezd nezadal, nabidneme zacatek akce (ne dnesek).
   const arrVal = myReg && myReg.arrivalDatetime ? toLocalInput(myReg.arrivalDatetime) : toLocalInput(e.startDatetime);
   const defaultNights = myReg?.nights ?? maxNights;
@@ -3016,8 +3228,7 @@ function openEventRegistration(eventId) {
     </div>
     ` : ''}
 
-    ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
-    ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
+    ${polozkyAkce(e).map(polozka => polozkaCounterHtml(polozka, pocetPolozky(myReg, polozka), 'pol')).join('')}
 
     <div class="form-actions">
       ${myReg?`<button class="btn btn-danger" onclick="cancelEventRegistration('${eventId}')">Odhlásit se</button>`:''}
@@ -3077,20 +3288,124 @@ function autoCalcNights(endDatetimeISO) {
   adjNights(0);
 }
 
-function adjBeer(elId, delta, price) {
-  const el = document.getElementById(elId);
-  let count = parseInt(el.dataset.count||'0') + delta;
+// ============================================
+// POLOZKY AKCE (pivo, limonada, vino, snidane...)
+// ============================================
+// Akce muze mit az 6 polozek. Slot 1 a 2 jsou historicka pole beer1/beer2,
+// slot 3-6 pribyl v SQL kroku 12. Co admin nevyplni, se nikde nezobrazi.
+const SLOTY_POLOZEK = [
+  { i: 1, nameKey: 'beer1Name', priceKey: 'beer1Price', countKey: 'beer1Count' },
+  { i: 2, nameKey: 'beer2Name', priceKey: 'beer2Price', countKey: 'beer2Count' },
+  { i: 3, nameKey: 'item3Name', priceKey: 'item3Price', countKey: 'item3Count' },
+  { i: 4, nameKey: 'item4Name', priceKey: 'item4Price', countKey: 'item4Count' },
+  { i: 5, nameKey: 'item5Name', priceKey: 'item5Price', countKey: 'item5Count' },
+  { i: 6, nameKey: 'item6Name', priceKey: 'item6Price', countKey: 'item6Count' }
+];
+
+const POCET_SLOTU_POLOZEK = () => state.itemsReady ? 6 : 2;
+
+// Jen napovedy v prazdnem formulari, nic se z nich neuklada.
+const PREDLOHY_POLOZEK = [
+  { nazev: 'Kozel 10°',   cena: 45 },
+  { nazev: 'Bernard 12°', cena: 55 },
+  { nazev: 'Limonáda',    cena: 25 },
+  { nazev: 'Víno 0,2 l',  cena: 60 },
+  { nazev: 'Snídaně', cena: 90 },
+  { nazev: 'Kofola',       cena: 30 }
+];
+
+function polozkyAkce(e) {
+  if (!e) return [];
+  return SLOTY_POLOZEK
+    .filter(s => s.i <= POCET_SLOTU_POLOZEK())
+    .map(s => ({
+      i: s.i,
+      name: (e[s.nameKey] || '').trim(),
+      price: e[s.priceKey] || 0,
+      countKey: s.countKey
+    }))
+    .filter(x => x.name !== '');
+}
+
+function pocetPolozky(reg, p) {
+  return (reg && reg[p.countKey]) || 0;
+}
+
+// Pocty vsech sesti slotu v poradi 1..6 - presne to, co ceka databaze.
+function poctyZPrihlasky(reg) {
+  return SLOTY_POLOZEK.map(s => (reg && reg[s.countKey]) || 0);
+}
+
+async function zjistiPolozky() {
+  const { error } = await db.from('events').select('item3_name').limit(1);
+  state.itemsReady = !error;
+  if (error) console.warn('polozky 3-6 nedostupne (nebezel SQL krok 12?):', error.message);
+}
+
+// Jedno pocitadlo polozky. prefix oddeluje formulare: 'pol' u prihlasky,
+// 'set-pol' u vyuctovani clenem.
+function polozkaCounterHtml(p, pocet, prefix) {
+  const id = `${prefix}-${p.i}`;
+  const kolecko = 'width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;';
+  return `
+    <div class="form-group">
+      <label>${p.name} – ${p.price} Kč/ks</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjPolozka('${id}', -1, ${p.price})" style="${kolecko}">−</button>
+        <span id="${id}" data-count="${pocet}" data-price="${p.price}"
+          style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${pocet}</span>
+        <button onclick="adjPolozka('${id}', 1, ${p.price})" style="${kolecko}">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="${id}-t">${pocet * p.price}</span> Kč</span>
+      </div>
+    </div>`;
+}
+
+function adjPolozka(id, delta, price) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let count = parseInt(el.dataset.count || '0') + delta;
   if (count < 0) count = 0;
   el.dataset.count = count;
   el.textContent = count;
-  const totalEl = document.getElementById(elId==='b1c'?'b1t':'b2t');
-  if (totalEl) totalEl.textContent = count * price;
+  const t = document.getElementById(id + '-t');
+  if (t) t.textContent = count * price;
+  if (id.startsWith('set-pol')) prepocitejVyuctovani();
+}
+
+// Vycte pocty z otevreneho formulare. Vraci vzdy sest cisel.
+function cteniPolozek(e, prefix) {
+  const out = [0, 0, 0, 0, 0, 0];
+  polozkyAkce(e).forEach(p => {
+    const el = document.getElementById(`${prefix}-${p.i}`);
+    out[p.i - 1] = parseInt(el?.dataset.count || '0') || 0;
+  });
+  return out;
+}
+
+// Souhrn "2x Pivo, 1x Limo" pro jeden radek v seznamu.
+function popisSpotreby(e, reg) {
+  return polozkyAkce(e)
+    .filter(p => pocetPolozky(reg, p) > 0)
+    .map(p => `${pocetPolozky(reg, p)}× ${p.name}`)
+    .join(', ');
+}
+
+// Kolik stoji jedna prihlaska podle ulozenych cen akce.
+function cenaPrihlasky(e, reg, noci) {
+  const n = noci != null ? noci : (reg.nights ?? nociAkce(e));
+  const nz = reg.nightsReduced || 0;
+  return n * (e.priceAccommodation || 0)
+       + nz * (e.priceAccommodationReduced || 0)
+       + polozkyAkce(e).reduce((sum, p) => sum + pocetPolozky(reg, p) * p.price, 0);
+}
+
+function nociAkce(e) {
+  return Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000 * 60 * 60 * 24));
 }
 
 async function doSaveEventReg(eventId) {
   const e = getEvent(eventId); if (!e) return;
-  const beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
-  const beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
+  const pocty = cteniPolozek(e, 'pol');
   const nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
   const nightsReduced = parseInt(document.getElementById('nights-red-cnt')?.dataset.count||'0');
   const arrivalVal = document.getElementById('ev-arrival').value;
@@ -3101,7 +3416,7 @@ async function doSaveEventReg(eventId) {
   const puvodni = myReg ? { ...myReg } : null;
 
   if (myReg) {
-    myReg.beer1Count = beer1Count; myReg.beer2Count = beer2Count;
+    SLOTY_POLOZEK.forEach((slot, idx) => { myReg[slot.countKey] = pocty[idx]; });
     myReg.nights = nights;
     myReg.nightsReduced = nightsReduced;
     myReg.arrivalDatetime = arrivalVal ? new Date(arrivalVal).toISOString() : null;
@@ -3109,7 +3424,8 @@ async function doSaveEventReg(eventId) {
   } else {
     myReg = {
       id: genId(), eventId, memberId: state.currentUserId,
-      beer1Count, beer2Count, nights, nightsReduced,
+      nights, nightsReduced,
+      ...Object.fromEntries(SLOTY_POLOZEK.map((slot, idx) => [slot.countKey, pocty[idx]])),
       arrivalDatetime: arrivalVal ? new Date(arrivalVal).toISOString() : null,
       updatedAt: now, createdAt: now
     };
@@ -3139,6 +3455,10 @@ async function saveEventRegistration_db(reg) {
   const { error } = await db.from('event_registrations').upsert({
     id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
     beer1_count: reg.beer1Count||0, beer2_count: reg.beer2Count||0,
+    ...(state.itemsReady ? {
+      item3_count: reg.item3Count || 0, item4_count: reg.item4Count || 0,
+      item5_count: reg.item5Count || 0, item6_count: reg.item6Count || 0
+    } : {}),
     nights: reg.nights || null,
     nights_reduced: reg.nightsReduced || 0,
     arrival_datetime: reg.arrivalDatetime||null,
@@ -3165,7 +3485,7 @@ function showEventAttendees(eventId) {
     <div class="modal-header"><div class="modal-title">👥 Přihlášení</div><div class="modal-subtitle">${e.name}</div></div>
     ${regs.length===0?'<div class="empty-msg">Nikdo nepřihlášen</div>':`<ul style="list-style:none;">${regs.map(r => {
       const m = getMember(r.memberId); if (!m) return '';
-      const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
+      const beers = popisSpotreby(e, r);
       const arr = r.arrivalDatetime?`🕐 ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
       const nocRed = (r.nightsReduced||0) > 0 ? `🧒 ${r.nightsReduced}× zvýhodněná noc` : '';
       return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,nocRed,arr].filter(Boolean).join(' · ')}</div></div></li>`;
