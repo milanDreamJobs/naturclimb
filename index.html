@@ -921,7 +921,9 @@ async function loadAllData() {
       beer1Count: r.beer1_count || 0, beer2Count: r.beer2_count || 0,
       item3Count: r.item3_count || 0, item4Count: r.item4_count || 0,
       item5Count: r.item5_count || 0, item6Count: r.item6_count || 0,
-      nights: r.nights || null,
+      // Pozor: nula je platny pocet noci (kdo spi ve vlastnim stanu),
+      // proto ?? a ne ||. Jinak se misto nuly dosadi delka akce.
+      nights: r.nights ?? null,
       nightsReduced: r.nights_reduced || 0,
       settledAt: r.settled_at, settledAmount: r.settled_amount,
       arrivalDatetime: r.arrival_datetime,
@@ -2766,7 +2768,7 @@ function openEventDetail(eventId) {
         <div class="member-avatar" style="margin-top:2px;">${getInitials(m.name)}</div>
         <div style="flex:1;">
           <div class="attendee-name">${m.name}${updatedBadge}</div>
-          <div style="font-size:12px;color:var(--ink-soft);">${[`${rNights} nocí${rNightsRed>0?` + ${rNightsRed} zvýhodněných`:''}`, beers, arr].filter(Boolean).join(' · ')}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">${[popisNoci(rNights, rNightsRed), beers, arr].filter(Boolean).join(' · ')}</div>
           ${r.settledAt ? `<div style="font-size:12px;color:var(--primary);font-weight:600;margin-top:2px;">🧾 Vyúčtoval/a se sám/sama · ${r.settledAmount || 0} Kč</div>` : ''}
           <div style="font-size:12px;font-weight:600;color:var(--primary);margin-top:2px;">Celkem: ${total} Kč</div>
         </div>
@@ -3854,6 +3856,17 @@ function cenaPrihlasky(e, reg, noci) {
        + polozkyAkce(e).reduce((sum, p) => sum + pocetPolozky(reg, p) * p.price, 0);
 }
 
+// "2 noci + 1 zvyhodnena", "3 zvyhodnene noci", "bez noclehu"
+function popisNoci(noci, zvyhodnene) {
+  const n = noci || 0;
+  const z = zvyhodnene || 0;
+  if (n === 0 && z === 0) return 'bez noclehu';
+  const casti = [];
+  if (n > 0) casti.push(`${n} nocí`);
+  if (z > 0) casti.push(`${z} zvýhodněných nocí`);
+  return casti.join(' + ');
+}
+
 function nociAkce(e) {
   return Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000 * 60 * 60 * 24));
 }
@@ -3914,7 +3927,7 @@ async function saveEventRegistration_db(reg) {
       item3_count: reg.item3Count || 0, item4_count: reg.item4Count || 0,
       item5_count: reg.item5Count || 0, item6_count: reg.item6Count || 0
     } : {}),
-    nights: reg.nights || null,
+    nights: reg.nights ?? null,   // nula je platna, viz nacitani
     nights_reduced: reg.nightsReduced || 0,
     arrival_datetime: reg.arrivalDatetime||null,
     updated_at: new Date().toISOString()
