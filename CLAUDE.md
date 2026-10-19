@@ -29,6 +29,8 @@ Každá nová funkce musí **bezpečně degradovat**, dokud její SQL neběželo
 - ISO čas usekaný na 16 znaků je UTC – do `datetime-local` převádět na místní čas (`toLocalInput()`).
 - Automatické odeslání kódu po pevném počtu číslic se rozbije při změně délky kódu – odesílat až na plné délce.
 - Tiché chyby při ukládání = „zmizelé přihlášky". Každá ukládací funkce musí vrátit úspěch/neúspěch a volající při chybě **vrátit stav zpět** a nechat dialog otevřený.
+- V testech `textContent('body')` obsahuje i **zdroják `<script>`** – kontrola na text pak projde, i když se nic nevykreslilo. Číst jen `#app` nebo obsah modálu (`#modal-overlay .modal`).
+- Lhůty a termíny platí na dvou místech (appka + databáze). Když se zavádí nová lhůta zpětně, musí migrace **jednorázově dorovnat stará data**, jinak se lidem funkce zavře pod rukama.
 - `git` v připojené složce po commitu neumí smazat své `.lock` soubory, dokud není povolené mazání – jinak GitHub Desktop zatuhne.
 - V shellu připojeného počítače není nastavená git identita – commitovat přes `git -c user.name=… -c user.email=…` stejnou, jakou mají předchozí commity.
 
