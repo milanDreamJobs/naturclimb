@@ -2638,6 +2638,7 @@ function openEventDetail(eventId) {
     <div class="quick-actions">
       <button onclick="openEventForm('${e.id}')">✎ Upravit</button>
       <button onclick="openEventSummary('${e.id}')">📊 Přehled</button>
+      ${e.status !== 'settled' ? `<button onclick="openEventAttendeePicker('${e.id}')">+ Přidat účastníka</button>` : ''}
       ${e.status !== 'settled' ? `<button onclick="settleEvent('${e.id}')" style="background:var(--ink);color:white;">💰 Zúčtovat</button>` : '<span class="status-badge settled">Zúčtováno</span>'}
     </div>
     <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px;">
@@ -2690,7 +2691,7 @@ function openEventDetail(eventId) {
         <div class="member-avatar" style="margin-top:2px;">${getInitials(m.name)}</div>
         <div style="flex:1;">
           <div class="attendee-name">${m.name}${updatedBadge}</div>
-          <div style="font-size:12px;color:var(--ink-soft);">${rNights} nocí${rNightsRed>0?` + ${rNightsRed} zvýhodněných`:''} · ${[beers,arr].filter(Boolean).join(' · ')}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">${[`${rNights} nocí${rNightsRed>0?` + ${rNightsRed} zvýhodněných`:''}`, beers, arr].filter(Boolean).join(' · ')}</div>
           ${r.settledAt ? `<div style="font-size:12px;color:var(--primary);font-weight:600;margin-top:2px;">🧾 Vyúčtoval/a se sám/sama · ${r.settledAmount || 0} Kč</div>` : ''}
           <div style="font-size:12px;font-weight:600;color:var(--primary);margin-top:2px;">Celkem: ${total} Kč</div>
         </div>
@@ -2713,6 +2714,85 @@ function openEventDetail(eventId) {
 function setEventRegFilter(f, eventId) {
   state.ui.eventRegFilter = f;
   openEventDetail(eventId);
+}
+
+// Admin prida na akci cloveka, ktery se sam neprihlasil (stejne jako
+// u treninku). Zalozi prihlasku s vychozim poctem noci; pocty polozek
+// si pak uz uprav tuzkou u jeho radku.
+function openEventAttendeePicker(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  const uz = new Set(state.eventRegistrations.filter(r => r.eventId === eventId).map(r => r.memberId));
+  const volni = state.members
+    .filter(m => m.isActive !== false && !uz.has(m.id))
+    .sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="openEventDetail('${eventId}')">×</button>
+    <div class="modal-header">
+      <div class="modal-title">+ Přidat účastníka</div>
+      <div class="modal-subtitle">${e.name} · kdo další jel?</div>
+    </div>
+
+    ${volni.length === 0 ? `
+      <div class="empty-msg" style="padding:16px;">Všichni členové už jsou přihlášení.</div>
+    ` : `
+      <input type="text" class="search-box" id="add-search" autocomplete="off"
+        placeholder="🔍 Hledej člena…"
+        oninput="filterPickerList(this.value)">
+
+      <ul style="list-style:none;" id="picker-list">
+        ${volni.map(m => `
+          <li class="attendee picker-item" data-name="${escapeAttr(normText(m.name))}"
+            onclick="pridejUcastnikaAkce('${eventId}', '${m.id}')" style="cursor:pointer;">
+            <div class="member-avatar">${getInitials(m.name)}</div>
+            <div class="attendee-name">${m.name}</div>
+            <div style="color:var(--primary);font-size:18px;">+</div>
+          </li>`).join('')}
+      </ul>
+
+      <div style="font-size:12px;color:var(--ink-soft);margin-top:10px;">
+        Založí se přihláška na ${nociAkce(e)} nocí bez položek.
+        Počty mu pak upravíš tužkou u jeho řádku.
+      </div>
+    `}
+
+    <button class="btn btn-secondary" style="width:100%;margin-top:16px;" onclick="openEventDetail('${eventId}')">
+      Hotovo – zpět na akci
+    </button>
+  `);
+}
+
+async function pridejUcastnikaAkce(eventId, memberId) {
+  const e = getEvent(eventId);
+  const m = getMember(memberId);
+  if (!e || !m) return;
+  if (state.eventRegistrations.some(r => r.eventId === eventId && r.memberId === memberId)) {
+    showToast('Tenhle člověk už přihlášený je');
+    return;
+  }
+
+  const ted = new Date().toISOString();
+  const reg = {
+    id: genId(), eventId, memberId,
+    nights: nociAkce(e), nightsReduced: 0,
+    ...Object.fromEntries(SLOTY_POLOZEK.map(slot => [slot.countKey, 0])),
+    arrivalDatetime: null, updatedAt: ted, createdAt: ted
+  };
+  state.eventRegistrations.push(reg);
+
+  const ulozeno = await saveEventRegistration_db(reg);
+  if (!ulozeno) {
+    // Uklid: at aplikace neukazuje prihlasku, ktera v databazi neni.
+    state.eventRegistrations = state.eventRegistrations.filter(r => r.id !== reg.id);
+    openEventAttendeePicker(eventId);
+    return;
+  }
+
+  showToast(`✓ ${m.name.split(' ')[0]} přidán/a na akci`);
+  openEventAttendeePicker(eventId);   // at jich jde pridat vic za sebou
+  render();
 }
 
 // ============================================
@@ -4831,10 +4911,10 @@ function openAddAttendeePicker(trainingId) {
 
 function filterPickerList(q) {
   const items = document.querySelectorAll('.picker-item');
-  const query = q.toLowerCase().trim();
+  const query = normText(q).trim();
   items.forEach(item => {
-    const name = item.dataset.name;
-    item.style.display = name.includes(query) ? '' : 'none';
+    const name = normText(item.dataset.name || '');
+    item.style.display = (!query || name.includes(query)) ? '' : 'none';
   });
 }
 
