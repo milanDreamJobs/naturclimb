@@ -965,6 +965,7 @@ async function loadAllData() {
     }));
 
     console.log('✅ All data loaded successfully');
+    posledniNacteni = Date.now();
   } catch (err) {
     console.error('❌ Failed to load data:', err);
     showToast('Chyba načítání dat. Zkus obnovit stránku.');
@@ -1354,6 +1355,29 @@ async function addTransaction(data) {
   return tx;
 }
 
+// ============================================
+// OBNOVENI DAT PO NAVRATU DO APPKY
+// ============================================
+// Data se nacitaji pri prihlaseni. Kdo necha zalozku otevrenou (a to dela
+// skoro kazdy), diva se pak na stary stav - treba na "ceka na potvrzeni"
+// u platby, kterou admin davno potvrdil. Proto data obnovime, jakmile se
+// clovek k appce vrati. Nikdy ale uprostred rozdelane prace v dialogu.
+let posledniNacteni = Date.now();
+
+async function obnovDataPoNavratu(minSekund) {
+  if (!state.currentUserId) return;
+  if (document.getElementById('modal-overlay')) return;   // otevreny dialog nerusime
+  if ((Date.now() - posledniNacteni) < minSekund * 1000) return;
+  posledniNacteni = Date.now();
+  await loadAllData();
+  render();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') obnovDataPoNavratu(30);
+});
+window.addEventListener('focus', () => obnovDataPoNavratu(30));
+
 function showToast(msg) {
   const toast = document.getElementById('toast');
   toast.textContent = msg;
@@ -1733,8 +1757,18 @@ async function vykresliQr(elementId, text) {
   if (svg) { svg.style.width = '190px'; svg.style.height = '190px'; svg.style.background = 'white'; }
 }
 
+function mojeCekajiciPlatby() {
+  return (state.paymentClaims || [])
+    .filter(c => c.memberId === state.currentUserId && c.status === 'pending');
+}
+
 function mojeCekajiciPlatba() {
-  return (state.paymentClaims || []).find(c => c.memberId === state.currentUserId && c.status === 'pending');
+  return mojeCekajiciPlatby()[0];
+}
+
+function cekajiciPlatbyClena(memberId) {
+  return (state.paymentClaims || [])
+    .filter(c => c.memberId === memberId && c.status === 'pending');
 }
 
 // Zelený puntík = letos uz dorazil prispevek (nebo jina potvrzena platba
@@ -1826,44 +1860,20 @@ function popisCekajiciPlatby(c) {
 function openPaymentDialog(predvybrano) {
   const settings = getSettings();
   const user = getCurrentUser();
-  const cekajici = mojeCekajiciPlatba();
+  const cekajiciSeznam = mojeCekajiciPlatby();
   const dluh = Math.max(0, -recalcBalance(user.id));
-
-  if (cekajici) {
-    openModal(`
-      <div class="modal-handle"></div>
-      <button class="modal-close" onclick="closeModal()">×</button>
-      <div class="modal-header">
-        <div class="modal-title">⏳ Platba čeká na potvrzení</div>
-      </div>
-      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;">
-        <div style="font-size:22px;font-weight:700;">${cekajici.amount} Kč</div>
-        <div style="font-size:13px;color:var(--ink-soft);margin-top:4px;">
-          ${popisCekajiciPlatby(cekajici)}
-          · ohlášeno ${new Date(cekajici.createdAt).toLocaleDateString('cs-CZ')}
-        </div>
-      </div>
-      <p style="font-size:13px;color:var(--ink-soft);">
-        Admin ji potvrdí, až uvidí peníze na účtu. Pak se ti připíše na konto.
-      </p>
-      <div class="form-actions">
-        <button class="btn btn-secondary" onclick="zrusitMojiPlatbu('${cekajici.id}')">Zrušit ohlášení</button>
-        <button class="btn btn-primary" onclick="closeModal()">Rozumím</button>
-      </div>
-    `);
-    return;
-  }
 
   // Dokud nebezel SQL krok 11, drzime stary dialog s jednou polozkou.
   if (!state.feesReady) { dialogPlatbyStary(dluh); return; }
 
   const sezona = aktualniSezona();
   const jizZaplaceno = !!prispevekSezony(user.id, sezona);
+  const prispevekCeka = cekajiciSeznam.some(c => (c.feeAmount || 0) > 0 || c.kind === 'membership' || c.kind === 'both');
 
   payForm = {
-    fee: (predvybrano === 'fee') && !jizZaplaceno,
+    fee: (predvybrano === 'fee') && !jizZaplaceno && !prispevekCeka,
     feeType: 'full',
-    topup: (predvybrano !== 'fee')
+    topup: (predvybrano !== 'fee') || jizZaplaceno || prispevekCeka
   };
 
   const ucet = settings.bankAccount || '';
@@ -1877,15 +1887,38 @@ function openPaymentDialog(predvybrano) {
       <div class="modal-subtitle">Pošli převodem a tady to ohlas – admin platbu potvrdí podle výpisu.</div>
     </div>
 
+    ${cekajiciSeznam.length ? `
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">
+          ⏳ Čeká na potvrzení adminem
+        </div>
+        ${cekajiciSeznam.map(c => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0;">
+            <div style="font-size:13px;">
+              <strong>${c.amount} Kč</strong>
+              <div style="color:var(--ink-soft);font-size:12px;">
+                ${popisCekajiciPlatby(c)} · ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
+              </div>
+            </div>
+            <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;flex-shrink:0;"
+              onclick="zrusitMojiPlatbu('${c.id}')">Zrušit</button>
+          </div>`).join('')}
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">
+          Admin je potvrdí, až uvidí peníze na účtu. Posílat znovu není potřeba.
+        </div>
+      </div>
+    ` : ''}
+
     <div class="form-group">
-      <label>Co platíš?
+      <label>${cekajiciSeznam.length ? 'Ohlásit další platbu' : 'Co platíš?'}
         <span style="font-weight:400;color:var(--ink-soft);font-size:12px;">(můžeš vybrat i obojí)</span>
       </label>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
 
-        ${jizZaplaceno ? `
+        ${(jizZaplaceno || prispevekCeka) ? `
           <div style="padding:12px 14px;border:1px dashed var(--line);border-radius:10px;font-size:13px;color:var(--ink-soft);">
-            🎫 Roční příspěvek ${popisSezony(sezona)} – <strong>už máš zaplaceno</strong> ✓
+            🎫 Roční příspěvek ${popisSezony(sezona)} –
+            <strong>${jizZaplaceno ? 'už máš zaplaceno ✓' : 'už ohlášený, čeká na potvrzení'}</strong>
           </div>
         ` : `
           <button class="btn-choice${payForm.fee ? ' selected' : ''}" id="pay-fee-toggle"
@@ -2056,21 +2089,32 @@ async function odeslatOhlaseniPlatby() {
     celkem = (payForm.fee ? sazbaPrispevku(payForm.feeType) : 0) + top;
     if (celkem <= 0) { ukaz('Zadej částku'); return; }
     rpcNazev = 'claim_payment2';
-    rpcArgs = { p_fee_type: payForm.fee ? payForm.feeType : null, p_topup_amount: top };
+    rpcArgs = { p_fee_type: payForm.fee ? payForm.feeType : null, p_topup_amount: top, p_keep_pending: true };
   }
 
   if (celkem > 100000) { ukaz('Tak velkou částku radši dohodni s adminem osobně'); return; }
 
   if (btn) { btn.disabled = true; btn.textContent = 'Odesílám…'; }
 
-  const { error } = await db.rpc(rpcNazev, rpcArgs);
+  let { error } = await db.rpc(rpcNazev, rpcArgs);
+  let nahradilo = false;
+
+  // Dokud nebezel SQL krok 15, funkce treti parametr nezna a nove
+  // ohlaseni nahradi to predchozi. Zkusime to tedy postaru a rekneme to.
+  if (error && rpcArgs.p_keep_pending && (error.code === 'PGRST202' || /claim_payment2/i.test(error.message || ''))) {
+    const { p_keep_pending, ...bezPriznaku } = rpcArgs;
+    ({ error } = await db.rpc(rpcNazev, bezPriznaku));
+    nahradilo = !error && mojeCekajiciPlatby().length > 0;
+  }
 
   if (btn) { btn.disabled = false; btn.textContent = 'Ohlásit platbu'; }
   if (error) { showDbError(error, 'Ohlášení se nepovedlo'); return; }
 
   await nactiPlatby();
   closeModal();
-  showToast('✓ Platba ohlášena – admin ji potvrdí');
+  showToast(nahradilo
+    ? '✓ Platba ohlášena – nahradila předchozí ohlášení'
+    : '✓ Platba ohlášena – admin ji potvrdí');
   render();
 }
 
@@ -2167,21 +2211,23 @@ async function nactiPlatby() {
   }));
 }
 
-async function potvrditPlatbu(claimId) {
+async function potvrditPlatbu(claimId, memberId) {
   const { error } = await db.rpc('confirm_payment_claim', { p_claim_id: claimId });
   if (error) { showDbError(error, 'Potvrzení se nepovedlo'); return; }
   await loadAllData();
   showToast('✓ Platba potvrzena a připsána');
   render();
+  if (memberId) openMemberDetail(memberId);   // at admin zustane, kde byl
 }
 
-async function zamitnoutPlatbu(claimId) {
+async function zamitnoutPlatbu(claimId, memberId) {
   if (!confirm('Opravdu zamítnout? Člen uvidí, že platba neprošla.')) return;
   const { error } = await db.rpc('reject_payment_claim', { p_claim_id: claimId, p_note: null });
   if (error) { showDbError(error, 'Zamítnutí se nepovedlo'); return; }
   await nactiPlatby();
   showToast('Platba zamítnuta');
   render();
+  if (memberId) openMemberDetail(memberId);
 }
 
 function vysvetliPuntik() {
@@ -2383,8 +2429,8 @@ function renderMember() {
       if (!state.feesReady) return '';
       if (prispevekSezony(user.id)) return '';
 
-      const ceka = mojeCekajiciPlatba();
-      const cekaPrispevek = ceka && ((ceka.feeAmount || 0) > 0 || ceka.kind === 'membership' || ceka.kind === 'both');
+      const cekaPrispevek = mojeCekajiciPlatby()
+        .some(c => (c.feeAmount || 0) > 0 || c.kind === 'membership' || c.kind === 'both');
       if (cekaPrispevek) {
         return `
           <div class="fee-cta">
@@ -2406,15 +2452,19 @@ function renderMember() {
     })()}
 
     ${(() => {
-      const cekajici = mojeCekajiciPlatba();
-      return cekajici ? `
-        <button class="btn btn-secondary" style="width:100%;margin-bottom:16px;" onclick="openPaymentDialog()">
-          ⏳ ${cekajici.amount} Kč čeká na potvrzení adminem
-        </button>
-      ` : `
-        <button class="btn btn-secondary" style="width:100%;margin-bottom:16px;" onclick="openPaymentDialog()">
+      // Tlacitko zustava i kdyz uz neco ceka - clovek muze ohlasit dalsi platbu.
+      const ceka = mojeCekajiciPlatby();
+      const soucet = ceka.reduce((s, c) => s + c.amount, 0);
+      return `
+        <button class="btn btn-secondary" style="width:100%;margin-bottom:${ceka.length ? '6px' : '16px'};"
+          onclick="openPaymentDialog()">
           💸 Zaplatil jsem na oddílový účet
         </button>
+        ${ceka.length ? `
+          <div onclick="openPaymentDialog()" style="cursor:pointer;text-align:center;font-size:12px;color:var(--ink-soft);margin-bottom:16px;">
+            ⏳ ${soucet} Kč čeká na potvrzení adminem${ceka.length > 1 ? ` (${ceka.length} platby)` : ''}
+          </div>
+        ` : ''}
       `;
     })()}
 
@@ -5702,6 +5752,34 @@ function openMemberDetail(id) {
       <button onclick="openCorrectionForm('${m.id}')">✎ Korekce</button>
       <button onclick="openMemberForm('${m.id}')">⚙ Upravit</button>
     </div>
+
+    ${(() => {
+      // Ohlasene platby jde potvrdit i tady, nejen na dashboardu.
+      const ceka = cekajiciPlatbyClena(m.id);
+      if (!ceka.length) return '';
+      return `
+        <div style="background:var(--accent-dim);border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:6px;">
+            ⏳ Ohlášené platby k potvrzení (${ceka.length})
+          </div>
+          ${ceka.map(c => `
+            <div style="padding:6px 0;border-top:1px solid rgba(0,0,0,0.06);">
+              <div style="font-size:14px;font-weight:600;">${c.amount} Kč</div>
+              <div style="font-size:12px;color:var(--ink-soft);">
+                ${popisCekajiciPlatby(c)} · ohlášeno ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
+              </div>
+              <div style="display:flex;gap:6px;margin-top:6px;">
+                <button class="btn btn-primary" style="padding:5px 12px;font-size:12px;"
+                  onclick="potvrditPlatbu('${c.id}', '${m.id}')">✓ Potvrdit</button>
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px;"
+                  onclick="zamitnoutPlatbu('${c.id}', '${m.id}')">Zamítnout</button>
+              </div>
+            </div>`).join('')}
+          <div style="font-size:11px;color:var(--ink-soft);margin-top:8px;">
+            Potvrď až podle bankovního výpisu – teprve tím se částka připíše.
+          </div>
+        </div>`;
+    })()}
 
     ${state.feesReady ? (() => {
       const sezona = state.ui.feeSeason ?? aktualniSezona();
