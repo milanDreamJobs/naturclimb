@@ -1364,6 +1364,69 @@ async function addTransaction(data) {
 // clovek k appce vrati. Nikdy ale uprostred rozdelane prace v dialogu.
 let posledniNacteni = Date.now();
 
+// Databaze umi zmeny rovnou posilat do otevrenych prohlizecu (Supabase
+// Realtime, zapnuty SQL krokem 16). Diky tomu clen nemusi nic obnovovat -
+// jakmile admin potvrdi platbu, obrazovka se prekresli sama.
+let kanalZmen = null;
+let obnovaNaplanovana = null;
+let obnovitPoZavreniDialogu = false;
+let zalozniPolling = null;
+
+function naplanujObnovu(zpozdeni) {
+  if (obnovaNaplanovana) return;              // vic zmen naraz = jedna obnova
+  obnovaNaplanovana = setTimeout(async () => {
+    obnovaNaplanovana = null;
+    if (!state.currentUserId) return;
+    if (document.getElementById('modal-overlay')) {
+      obnovitPoZavreniDialogu = true;         // nerusime rozdelanou praci
+      return;
+    }
+    await loadAllData();
+    render();
+  }, zpozdeni || 1500);
+}
+
+function spustSledovaniZmen() {
+  if (kanalZmen || typeof db.channel !== 'function') return;
+  try {
+    kanalZmen = db.channel('naturclimb-zmeny')
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => naplanujObnovu())
+      .subscribe(stav => {
+        if (stav === 'SUBSCRIBED') {
+          console.log('🔄 Zivé zmeny zapnute');
+          zastavZalozniPolling();
+        } else if (stav === 'CHANNEL_ERROR' || stav === 'TIMED_OUT' || stav === 'CLOSED') {
+          console.warn('Zive zmeny nedostupne (nebezel SQL krok 16?):', stav);
+          spustZalozniPolling();
+        }
+      });
+  } catch (err) {
+    console.warn('Zive zmeny nedostupne:', err.message);
+    spustZalozniPolling();
+  }
+}
+
+function zastavSledovaniZmen() {
+  zastavZalozniPolling();
+  if (kanalZmen) {
+    try { db.removeChannel(kanalZmen); } catch (err) { /* nevadi */ }
+    kanalZmen = null;
+  }
+}
+
+// Kdyz zive zmeny nejedou, aspon se obcas podivame - jen kdyz se clovek
+// na appku doopravdy diva, at zbytecne nebudime telefon.
+function spustZalozniPolling() {
+  if (zalozniPolling) return;
+  zalozniPolling = setInterval(() => {
+    if (document.visibilityState === 'visible') naplanujObnovu(0);
+  }, 90000);
+}
+
+function zastavZalozniPolling() {
+  if (zalozniPolling) { clearInterval(zalozniPolling); zalozniPolling = null; }
+}
+
 async function obnovDataPoNavratu(minSekund) {
   if (!state.currentUserId) return;
   if (document.getElementById('modal-overlay')) return;   // otevreny dialog nerusime
@@ -1658,6 +1721,7 @@ async function afterLogin() {
   state.ui.authStep = 'email';
 
   await autoGenerateSauna();
+  spustSledovaniZmen();
   render();
 }
 
@@ -1684,6 +1748,7 @@ function selectMember(id) {
 }
 
 async function logout() {
+  zastavSledovaniZmen();
   await db.auth.signOut();
   setCurrentUser(null);
   // Data z pameti pryc, at je dalsi clovek u stejneho prohlizece nevidi.
@@ -6114,6 +6179,10 @@ function closeModal() {
   const overlay = document.getElementById('modal-overlay');
   if (overlay) overlay.remove();
   document.body.style.overflow = '';
+  if (obnovitPoZavreniDialogu) {
+    obnovitPoZavreniDialogu = false;
+    naplanujObnovu(300);
+  }
 }
 
 // ============================================
