@@ -675,6 +675,17 @@
     padding: 12px; border: 1.5px solid var(--line); border-radius: 10px;
     font-family: monospace; font-size: 13px; resize: vertical;
   }
+
+  /* FAQ sekce */
+  .faq-section { margin-bottom: 16px; }
+  .faq-item { background: white; border-radius: 12px; overflow: hidden; margin-bottom: 8px; box-shadow: 0 2px 8px rgba(15,32,39,0.06); }
+  .faq-question { width: 100%; background: none; border: none; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; font-size: 15px; font-weight: 600; color: var(--ink); font-family: inherit; text-align: left; }
+  .faq-question:hover { background: rgba(15,32,39,0.03); }
+  .faq-icon { font-size: 20px; font-weight: 300; color: var(--ink-soft); flex-shrink: 0; transition: transform 0.2s; }
+  .faq-question.open .faq-icon { transform: rotate(45deg); }
+  .faq-answer { font-size: 14px; color: var(--ink-soft); line-height: 1.6; padding: 0 16px; max-height: 0; overflow: hidden; transition: max-height 0.3s ease, padding 0.2s; }
+  .faq-answer.open { max-height: 300px; padding: 0 16px 14px; }
+
 </style>
 </head>
 <body>
@@ -1545,6 +1556,28 @@ function renderMember() {
       <button class="btn btn-secondary" style="width: 100%;" onclick="showHistory()">
         📜 Historie konta →
       </button>
+    </div>
+
+    <div class="faq-section" style="margin-top: 24px;">
+      <div class="section-title">Časté dotazy</div>
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Jak funguje NaturClimb konto vs. oddílový účet?</span>
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-answer">
+          Peníze jsou fyzicky pouze na bankovním účtu oddílu v mBank. NaturClimb konto je virtuální evidence – každý člen vidí svůj přehled pohybů (tréninky, platby). Peníze na bank. účet posíláš jen tehdy, když tvůj dluh na NaturClimb kontě přesáhne 500 Kč. Všechny platby se v NaturClimb jen ohlašují – slouží k přehledu a kontrole toku peněz podle členů.
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Kdy se platí oddílové příspěvky?</span>
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-answer">
+          Příspěvky se platí v říjnu a listopadu. Nováčci mohou platit dříve – již od července – a v takovém případě jim členství platí až do dalšího roku.
+        </div>
+      </div>
     </div>
   `;
 }
@@ -2520,6 +2553,19 @@ function renderHistoryItem(tx) {
   `;
 }
 
+function toggleFaq(btn) {
+  const answer = btn.nextElementSibling;
+  const isOpen = answer.classList.contains('open');
+  // Zavřeme všechny otevřené
+  document.querySelectorAll('.faq-answer.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('.faq-question.open').forEach(el => el.classList.remove('open'));
+  // Pokud nebyl otevřen, otevřeme
+  if (!isOpen) {
+    answer.classList.add('open');
+    btn.classList.add('open');
+  }
+}
+
 function copyBank(e, account) {
   e.stopPropagation();
   navigator.clipboard?.writeText(account);
@@ -3085,12 +3131,12 @@ function renderSettlementUI(t) {
       ? `Každý dostane ${Math.abs(t.price)} Kč`
       : 'Bez vlivu na konto';
 
-  const totalImpact = attendees.length * t.price;
+  const totalImpact = t._settlementAttendees.length * t.price;
   const impactText = totalImpact === 0
     ? ''
     : totalImpact > 0
-      ? `Celkem se odečte ${totalImpact} Kč z ${attendees.length} kont`
-      : `Celkem se přičte ${Math.abs(totalImpact)} Kč na ${attendees.length} kont`;
+      ? `Celkem se odečte ${totalImpact} Kč z ${t._settlementAttendees.length} kont`
+      : `Celkem se přičte ${Math.abs(totalImpact)} Kč na ${t._settlementAttendees.length} kont`;
 
   const html = `
     <div class="modal-handle"></div>
@@ -3104,7 +3150,7 @@ function renderSettlementUI(t) {
     </div>
 
     <p style="font-size: 14px; color: var(--ink-soft); margin-bottom: 4px;">
-      <strong>Kdo přišel</strong> (${attendees.length})
+      <strong>Kdo přišel</strong> (${t._settlementAttendees.length})
     </p>
     <p style="font-size: 12px; color: var(--ink-soft); margin-bottom: 12px; font-style: italic;">
       Klikni na člena, kterého chceš odebrat – nebyl tu
@@ -3209,10 +3255,15 @@ function filterPickerList(q) {
 
 function addToSettlement(trainingId, memberId) {
   const t = getTraining(trainingId);
-  if (!t) return;
+  if (!t) { console.warn('addToSettlement: trénink nenalezen', trainingId); return; }
+  // Guard: inicializovat pole pokud chybí
+  if (!Array.isArray(t._settlementAttendees)) {
+    t._settlementAttendees = [...t.registrations];
+  }
   if (!t._settlementAttendees.includes(memberId)) {
     t._settlementAttendees.push(memberId);
   }
+  console.log('✚ addToSettlement:', memberId, '→', t._settlementAttendees.length, 'celkem');
   renderSettlementUI(t);
 }
 
