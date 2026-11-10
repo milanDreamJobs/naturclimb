@@ -718,6 +718,7 @@
     padding: 12px; border: 1.5px solid var(--line); border-radius: 10px;
     font-family: monospace; font-size: 13px; resize: vertical;
   }
+.faq-section{margin-top:24px;margin-bottom:16px}.faq-item{background:white;border-radius:12px;overflow:hidden;margin-bottom:8px;box-shadow:0 2px 8px rgba(15,32,39,0.06)}.faq-question{width:100%;background:none;border:none;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;font-size:15px;font-weight:600;color:var(--ink);font-family:inherit;text-align:left}.faq-question:hover{background:rgba(15,32,39,0.03)}.faq-icon{font-size:20px;font-weight:300;color:var(--ink-soft);flex-shrink:0;transition:transform 0.2s}.faq-question.open .faq-icon{transform:rotate(45deg)}.faq-answer{font-size:14px;color:var(--ink-soft);line-height:1.6;padding:0 16px;max-height:0;overflow:hidden;transition:max-height 0.3s ease,padding 0.2s}.faq-answer.open{max-height:400px;padding:0 16px 14px}
 </style>
 </head>
 <body>
@@ -2028,6 +2029,13 @@ function openPaymentDialog(predvybrano) {
       <div id="pay-breakdown" style="font-size:12px;color:var(--ink-soft);margin-top:4px;"></div>
     </div>
 
+    <div id="pay-error" style="color:var(--warning);font-size:13px;display:none;margin-bottom:8px;text-align:center;"></div>
+
+    <div class="form-actions" style="margin-bottom:12px;">
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" id="pay-submit" onclick="odeslatOhlaseniPlatby()">Ohlásit platbu</button>
+    </div>
+
     ${ucet ? `
       <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;text-align:center;">
         <div id="pay-qr" style="min-height:40px;display:flex;justify-content:center;align-items:center;">
@@ -2042,13 +2050,6 @@ function openPaymentDialog(predvybrano) {
         Admin ještě nevyplnil číslo oddílového účtu. Domluv se s ním na platbě.
       </div>
     `}
-
-    <div id="pay-error" style="color:var(--warning);font-size:13px;display:none;margin-bottom:8px;text-align:center;"></div>
-
-    <div class="form-actions">
-      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
-      <button class="btn btn-primary" id="pay-submit" onclick="odeslatOhlaseniPlatby()">Ohlásit platbu</button>
-    </div>
   `);
 
   prepocitejPlatbu();
@@ -2551,6 +2552,29 @@ function renderMember() {
       <button class="btn btn-secondary" style="width: 100%;" onclick="showHistory()">
         📜 Historie konta →
       </button>
+    </div>
+
+    <div class="faq-section">
+      <div class="section-title">Časté dotazy</div>
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Jak funguje NaturClimb konto vs. oddílový účet?</span>
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-answer">
+          Peníze jsou fyzicky pouze na bankovním účtu oddílu v mBank. NaturClimb konto je virtuální evidence – každý člen má svůj přehled, aby bylo jasné, kdo kolik zaplatil a kdo dluží.<br><br>
+          Peníze se posílají na bankovní účet pouze tehdy, když dluh na NaturClimb kontu přesáhne 500 Kč. Všechny platby se v NaturClimb jen ohlašují – díky tomu může admin lépe kontrolovat tok peněz na bankovním účtu podle jednotlivých členů.
+        </div>
+      </div>
+      <div class="faq-item">
+        <button class="faq-question" onclick="toggleFaq(this)">
+          <span>Kdy se platí oddílové příspěvky?</span>
+          <span class="faq-icon">+</span>
+        </button>
+        <div class="faq-answer">
+          Příspěvky se platí v říjnu a listopadu. Nováčci mohou platit dříve – již od července – a členství jim platí až do dalšího roku.
+        </div>
+      </div>
     </div>
   `;
 }
@@ -4632,6 +4656,18 @@ function renderHistoryItem(tx) {
   `;
 }
 
+
+function toggleFaq(btn) {
+  const answer = btn.nextElementSibling;
+  const isOpen = answer.classList.contains('open');
+  document.querySelectorAll('.faq-answer.open').forEach(el => el.classList.remove('open'));
+  document.querySelectorAll('.faq-question.open').forEach(el => el.classList.remove('open'));
+  if (!isOpen) {
+    answer.classList.add('open');
+    btn.classList.add('open');
+  }
+}
+
 function copyBank(e, account) {
   e.stopPropagation();
   navigator.clipboard?.writeText(account);
@@ -5233,12 +5269,13 @@ function renderSettlementUI(t) {
       ? `Každý dostane ${Math.abs(t.price)} Kč`
       : 'Bez vlivu na konto';
 
-  const totalImpact = attendees.length * t.price;
+  const totalCount = t._settlementAttendees.length;
+  const totalImpact = totalCount * t.price;
   const impactText = totalImpact === 0
     ? ''
     : totalImpact > 0
-      ? `Celkem se odečte ${totalImpact} Kč z ${attendees.length} kont`
-      : `Celkem se přičte ${Math.abs(totalImpact)} Kč na ${attendees.length} kont`;
+      ? `Celkem se odečte ${totalImpact} Kč z ${totalCount} kont`
+      : `Celkem se přičte ${Math.abs(totalImpact)} Kč na ${totalCount} kont`;
 
   const html = `
     <div class="modal-handle"></div>
@@ -5252,7 +5289,7 @@ function renderSettlementUI(t) {
     </div>
 
     <p style="font-size: 14px; color: var(--ink-soft); margin-bottom: 4px;">
-      <strong>Kdo přišel</strong> (${attendees.length})
+      <strong>Kdo přišel</strong> (${totalCount})
     </p>
     <p style="font-size: 12px; color: var(--ink-soft); margin-bottom: 12px; font-style: italic;">
       Klikni na člena, kterého chceš odebrat – nebyl tu
@@ -5358,6 +5395,9 @@ function filterPickerList(q) {
 function addToSettlement(trainingId, memberId) {
   const t = getTraining(trainingId);
   if (!t) return;
+  if (!Array.isArray(t._settlementAttendees)) {
+    t._settlementAttendees = [...t.registrations];
+  }
   if (!t._settlementAttendees.includes(memberId)) {
     t._settlementAttendees.push(memberId);
   }
