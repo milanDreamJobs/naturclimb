@@ -114,6 +114,42 @@
   .member-meta { flex: 1; min-width: 0; }
   .member-name { font-weight: 500; font-size: 15px; }
   .member-email { font-size: 12px; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .fee-dot {
+    display: inline-block; width: 9px; height: 9px;
+    border-radius: 50%; margin-right: 6px; vertical-align: baseline;
+  }
+  .fee-dot.paid { background: var(--green); }
+  .fee-dot.unpaid { background: var(--accent); }
+
+  .fee-stamp {
+    display: inline-block; margin-top: 6px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
+    color: var(--green); background: rgba(46,125,50,0.10);
+    border: 1px solid rgba(46,125,50,0.35);
+    padding: 3px 9px; border-radius: 999px; white-space: nowrap;
+    font-family: 'Bricolage Grotesque', sans-serif;
+  }
+  .fee-cta {
+    background: var(--accent-dim); border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 12px; padding: 14px; margin-bottom: 16px;
+  }
+  .fee-cta .fee-cta-title { font-weight: 700; font-size: 15px; margin-bottom: 2px; }
+
+  .tip-wrap { position: relative; display: flex; }
+  .tip-bubble {
+    display: none; position: absolute; top: calc(100% + 8px); left: 0; right: 0;
+    background: var(--ink); color: var(--paper);
+    font-size: 11.5px; line-height: 1.4; font-weight: 400; text-align: left;
+    padding: 9px 11px; border-radius: 8px; z-index: 60;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.28);
+  }
+  .tip-bubble::after {
+    content: ''; position: absolute; bottom: 100%; left: 24px;
+    border: 6px solid transparent; border-bottom-color: var(--ink);
+  }
+  .tip-wrap:hover .tip-bubble, .tip-wrap.open .tip-bubble { display: block; }
+  .fee-cta .fee-cta-sub { font-size: 12px; color: var(--ink-soft); margin-bottom: 10px; }
+
   .admin-badge {
     font-size: 10px; background: var(--secondary); color: white;
     padding: 2px 6px; border-radius: 4px;
@@ -239,6 +275,8 @@
     display: flex; align-items: center; gap: 8px;
   }
   .section-title::after { content: ''; flex: 1; height: 1px; background: rgba(255, 255, 255, 0.4); }
+  .modal .section-title { color: var(--ink); text-shadow: none; }
+  .modal .section-title::after { background: var(--line); }
   .section-title .action-link {
     text-decoration: none; color: var(--accent);
     font-size: 12px; font-weight: 700;
@@ -579,6 +617,11 @@
     border: 2px solid transparent;
     transition: all 0.15s ease;
   }
+  .btn-choice.selected {
+    border-color: var(--primary);
+    background: rgba(26, 95, 90, 0.08);
+    box-shadow: inset 0 0 0 1px var(--primary);
+  }
   .btn-choice-nejdu {
     background: #f0f0f0;
     color: #888;
@@ -690,11 +733,13 @@
 // ============================================
 const SUPABASE_URL = 'https://opyhlmtgyuuatevwyfpl.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_KYRaGl-FYPmBPB185Y3Plw_YpemIWOn';
+// Pristup do databaze chrani overene prihlaseni (Supabase Auth) a pravidla
+// primo v databazi - ne zadny "tajny" retezec v kodu stranky.
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-  global: {
-    headers: {
-      'x-club-token': 'naturclimb_2024_tajny_klub'
-    }
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false
   }
 });
 
@@ -705,14 +750,23 @@ const state = {
   setup: null,
   members: [],
   trainings: [],
+  cancelledTrainings: [],
   transactions: [],
   events: [],
   eventRegistrations: [],
   eventRides: [],
+  paymentClaims: [],
+  membershipFees: [],
+  feesReady: false,
+  itemsReady: false,
+  deadlineReady: false,
+  settleReady: false,
   currentUserId: null,
   currentView: 'member',
   adminTab: 'dashboard',
-  ui: { historyView: false, selectedMemberId: null, selectedTrainingId: null }
+  ui: { historyView: false, selectedMemberId: null, selectedTrainingId: null, memberSearch: '',
+        feeFilter: 'all', feeSeason: null, eventRegFilter: 'all',
+        authStep: 'email', authEmail: '', authBusy: false }
 };
 
 // ============================================
@@ -750,7 +804,10 @@ async function loadAllData() {
         clubName: settingsRow.club_name,
         bankAccount: settingsRow.bank_account || '',
         debtLimit: settingsRow.debt_limit ?? -500,
-        creditLimit: settingsRow.credit_limit ?? 500
+        creditLimit: settingsRow.credit_limit ?? 500,
+        feeFull: settingsRow.membership_fee_full ?? 800,
+        feeReduced: settingsRow.membership_fee_reduced ?? 500,
+        feeSeasonStartMonth: settingsRow.fee_season_start_month ?? 9
       };
     }
 
@@ -789,7 +846,7 @@ async function loadAllData() {
       .from('trainings').select('*').order('datetime');
     if (tErr) console.error('❌ Trainings error:', tErr);
     console.log('🧗 Trainings loaded:', (trainingsData || []).length);
-    state.trainings = (trainingsData || []).map(t => ({
+    const allTrainings = (trainingsData || []).map(t => ({
       id: t.id,
       datetime: t.datetime,
       venue: t.venue,
@@ -804,6 +861,10 @@ async function loadAllData() {
       settledAt: t.settled_at,
       createdAt: t.created_at
     }));
+    // Zrusene treninky (napr. sauna, ktera se nekona) drzime stranou:
+    // nezobrazuji se nikde v UI, slouzi jen k tomu, aby je automatika znovu nevytvorila.
+    state.trainings = allTrainings.filter(t => t.status !== 'cancelled');
+    state.cancelledTrainings = allTrainings.filter(t => t.status === 'cancelled');
 
     // Transactions
     const { data: txData, error: txErr } = await db
@@ -824,7 +885,12 @@ async function loadAllData() {
       createdAt: tx.created_at
     }));
 
-    state.members.forEach(m => recalcBalance(m.id));
+    // Bezny clen vidi jen sve vlastni transakce - cizi zustatky by prepocet vynuloval.
+    if (state.currentUserId && !isAdmin()) {
+      recalcBalance(state.currentUserId);
+    } else {
+      state.members.forEach(m => recalcBalance(m.id));
+    }
 
     // Events
     const { data: eventsData, error: evErr } = await db
@@ -835,8 +901,14 @@ async function loadAllData() {
       startDatetime: e.start_datetime, endDatetime: e.end_datetime,
       venue: e.venue,
       priceAccommodation: e.price_accommodation || 0,
+      priceAccommodationReduced: e.price_accommodation_reduced || 0,
       beer1Name: e.beer1_name || '', beer1Price: e.beer1_price || 0,
       beer2Name: e.beer2_name || '', beer2Price: e.beer2_price || 0,
+      item3Name: e.item3_name || '', item3Price: e.item3_price || 0,
+      item4Name: e.item4_name || '', item4Price: e.item4_price || 0,
+      item5Name: e.item5_name || '', item5Price: e.item5_price || 0,
+      item6Name: e.item6_name || '', item6Price: e.item6_price || 0,
+      settlementDeadline: e.settlement_deadline || null,
       status: e.status || 'open', createdAt: e.created_at
     }));
 
@@ -847,11 +919,37 @@ async function loadAllData() {
     state.eventRegistrations = (erData || []).map(r => ({
       id: r.id, eventId: r.event_id, memberId: r.member_id,
       beer1Count: r.beer1_count || 0, beer2Count: r.beer2_count || 0,
-      nights: r.nights || null,
+      item3Count: r.item3_count || 0, item4Count: r.item4_count || 0,
+      item5Count: r.item5_count || 0, item6Count: r.item6_count || 0,
+      // Pozor: nula je platny pocet noci (kdo spi ve vlastnim stanu),
+      // proto ?? a ne ||. Jinak se misto nuly dosadi delka akce.
+      nights: r.nights ?? null,
+      nightsReduced: r.nights_reduced || 0,
+      settledAt: r.settled_at, settledAmount: r.settled_amount,
       arrivalDatetime: r.arrival_datetime,
       updatedAt: r.updated_at,
       createdAt: r.created_at
     }));
+
+    // Ohlasene platby (clen vidi sve, admin vsechny)
+    const { data: claimsData, error: pcErr } = await db
+      .from('payment_claims').select('*').order('created_at', { ascending: false });
+    if (pcErr) console.error('❌ PaymentClaims error:', pcErr);
+    state.paymentClaims = (claimsData || []).map(c => ({
+      id: c.id, memberId: c.member_id, amount: c.amount,
+      kind: c.kind, feeType: c.fee_type, year: c.year,
+      feeAmount: c.fee_amount || 0, topupAmount: c.topup_amount || 0,
+      seasonYear: c.season_year != null ? c.season_year : c.year,
+      status: c.status, note: c.note,
+      createdAt: c.created_at, decidedAt: c.decided_at
+    }));
+
+    // Zaplacene clenske prispevky po sezonach.
+    // Kdyz SQL krok11 jeste nebezel, tabulka neexistuje - appka pak jen
+    // schova razitka a filtry a chova se jako pred zmenou.
+    await nactiPrispevky();
+    await zjistiPolozky();
+    await zjistiLhutu();
 
     // Event rides
     const { data: ridesData, error: riErr } = await db
@@ -867,14 +965,12 @@ async function loadAllData() {
     }));
 
     console.log('✅ All data loaded successfully');
+    posledniNacteni = Date.now();
   } catch (err) {
     console.error('❌ Failed to load data:', err);
     showToast('Chyba načítání dat. Zkus obnovit stránku.');
   }
 
-  // Session (lokálně v prohlížeči)
-  const session = localStorage.getItem('currentUserId');
-  if (session) state.currentUserId = session;
 }
 
 // ============================================
@@ -886,6 +982,10 @@ async function saveSetup() {
     id: 1,
     club_name: state.setup.clubName,
     bank_account: state.setup.bankAccount || '',
+    membership_fee_full: state.setup.feeFull ?? 800,
+    membership_fee_reduced: state.setup.feeReduced ?? 500,
+    // sloupec existuje teprve po SQL kroku 11 - jinak bychom upsert rozbili
+    ...(state.feesReady ? { fee_season_start_month: state.setup.feeSeasonStartMonth ?? 9 } : {}),
     debt_limit: state.setup.debtLimit,
     credit_limit: state.setup.creditLimit,
     is_setup: true,
@@ -895,6 +995,15 @@ async function saveSetup() {
     console.error('saveSetup error:', error);
     showToast('Chyba ukládání nastavení');
   }
+}
+
+// Zustatek se neposila jako cislo - databaze si ho dopocita ze skutecnych
+// transakci. Diky tomu ho nejde nastavit na libovolnou hodnotu.
+async function saveMemberBalance(memberId) {
+  const { data, error } = await db.rpc('recalc_member_balance', { p_member_id: memberId });
+  if (error) { console.error('recalc_member_balance:', error); return; }
+  const m = getMember(memberId);
+  if (m && typeof data === 'number') m.balance = data;
 }
 
 async function saveMember(member) {
@@ -955,7 +1064,8 @@ async function saveTraining(training) {
     settlement_attendees: training._settlementAttendees || null,
     settled_at: training.settledAt || null
   });
-  if (error) { console.error('saveTraining:', error); showToast('Chyba ukládání tréninku'); }
+  if (error) { console.error('saveTraining:', error); showDbError(error, 'Trénink se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function deleteTrainingFromDb(trainingId) {
@@ -998,17 +1108,32 @@ async function saveEvent(event) {
     start_datetime: event.startDatetime, end_datetime: event.endDatetime,
     venue: event.venue,
     price_accommodation: event.priceAccommodation || 0,
+    price_accommodation_reduced: event.priceAccommodationReduced || 0,
     beer1_name: event.beer1Name || '', beer1_price: event.beer1Price || 0,
     beer2_name: event.beer2Name || '', beer2_price: event.beer2Price || 0,
+    // sloupce polozek 3-6 existuji teprve po SQL kroku 12
+    ...(state.itemsReady ? {
+      item3_name: event.item3Name || '', item3_price: event.item3Price || 0,
+      item4_name: event.item4Name || '', item4_price: event.item4Price || 0,
+      item5_name: event.item5Name || '', item5_price: event.item5Price || 0,
+      item6_name: event.item6Name || '', item6_price: event.item6Price || 0
+    } : {}),
+    // sloupec s lhutou existuje teprve po SQL kroku 13
+    ...(state.deadlineReady ? { settlement_deadline: event.settlementDeadline || null } : {}),
     status: event.status || 'open'
   });
-  if (error) { console.error('saveEvent:', error); showToast('Chyba ukládání akce'); }
+  if (error) { console.error('saveEvent:', error); showDbError(error, 'Akci se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function saveEventRegistration(reg) {
   const { error } = await db.from('event_registrations').upsert({
     id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
     beer1_count: reg.beer1Count || 0, beer2_count: reg.beer2Count || 0,
+    ...(state.itemsReady ? {
+      item3_count: reg.item3Count || 0, item4_count: reg.item4Count || 0,
+      item5_count: reg.item5Count || 0, item6_count: reg.item6Count || 0
+    } : {}),
     arrival_datetime: reg.arrivalDatetime || null
   });
   if (error) { console.error('saveEventReg:', error); showToast('Chyba ukládání přihlášky'); }
@@ -1028,7 +1153,8 @@ async function saveEventRide(ride) {
     price_info: ride.priceInfo || '', note: ride.note || '',
     reservations: ride.reservations || []
   });
-  if (error) { console.error('saveEventRide:', error); showToast('Chyba ukládání odvozu'); }
+  if (error) { console.error('saveEventRide:', error); showDbError(error, 'Odvoz se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function deleteEventRide(rideId) {
@@ -1042,7 +1168,7 @@ async function saveState(key) {
     await saveSetup();
   } else if (key === 'members') {
     // Save all members (their balance may have changed)
-    for (const m of state.members) await saveMember(m);
+    for (const m of state.members) await saveMemberBalance(m.id);
   } else if (key === 'trainings') {
     // Save all trainings
     for (const t of state.trainings) await saveTraining(t);
@@ -1055,8 +1181,6 @@ async function saveState(key) {
 
 function setCurrentUser(userId) {
   state.currentUserId = userId;
-  if (userId) localStorage.setItem('currentUserId', userId);
-  else localStorage.removeItem('currentUserId');
 }
 
 async function resetAllData() {
@@ -1079,8 +1203,10 @@ function genId() {
 }
 
 function formatKc(amount) {
-  const sign = amount > 0 ? '+' : '';
-  return `${sign}${amount.toLocaleString('cs-CZ')} Kč`;
+  const cislo = Number(amount);
+  if (!Number.isFinite(cislo)) return '—';
+  const sign = cislo > 0 ? '+' : '';
+  return `${sign}${cislo.toLocaleString('cs-CZ')} Kč`;
 }
 
 function formatDate(iso) {
@@ -1172,10 +1298,15 @@ function isDeclined(trainingId, memberId) {
 }
 
 function isPastDeadline(training) {
-  // Pro člena: uzávěrka je v 21:00 dne tréninku
-  // Po tomto čase se nemůže přihlašovat/odhlašovat
+  // Uzaverka pro clena: lezecky trenink ve 21:00 dne treninku,
+  // sauna az ve 23:50 (chodi se na ni i na posledni chvili).
   const t = new Date(training.datetime);
-  const deadline = new Date(t.getFullYear(), t.getMonth(), t.getDate(), 21, 0, 0);
+  const sauna = isSaunaTraining(training);
+  const deadline = new Date(
+    t.getFullYear(), t.getMonth(), t.getDate(),
+    sauna ? 23 : 21,
+    sauna ? 50 : 0, 0
+  );
   return new Date() > deadline;
 }
 
@@ -1219,11 +1350,96 @@ async function addTransaction(data) {
     recalcBalance(data.memberId);
     return null;
   }
-  const member = getMember(data.memberId);
-  if (member) await saveMember(member);
+  await saveMemberBalance(data.memberId);
 
   return tx;
 }
+
+// ============================================
+// OBNOVENI DAT PO NAVRATU DO APPKY
+// ============================================
+// Data se nacitaji pri prihlaseni. Kdo necha zalozku otevrenou (a to dela
+// skoro kazdy), diva se pak na stary stav - treba na "ceka na potvrzeni"
+// u platby, kterou admin davno potvrdil. Proto data obnovime, jakmile se
+// clovek k appce vrati. Nikdy ale uprostred rozdelane prace v dialogu.
+let posledniNacteni = Date.now();
+
+// Databaze umi zmeny rovnou posilat do otevrenych prohlizecu (Supabase
+// Realtime, zapnuty SQL krokem 16). Diky tomu clen nemusi nic obnovovat -
+// jakmile admin potvrdi platbu, obrazovka se prekresli sama.
+let kanalZmen = null;
+let obnovaNaplanovana = null;
+let obnovitPoZavreniDialogu = false;
+let zalozniPolling = null;
+
+function naplanujObnovu(zpozdeni) {
+  if (obnovaNaplanovana) return;              // vic zmen naraz = jedna obnova
+  obnovaNaplanovana = setTimeout(async () => {
+    obnovaNaplanovana = null;
+    if (!state.currentUserId) return;
+    if (document.getElementById('modal-overlay')) {
+      obnovitPoZavreniDialogu = true;         // nerusime rozdelanou praci
+      return;
+    }
+    await loadAllData();
+    render();
+  }, zpozdeni || 1500);
+}
+
+function spustSledovaniZmen() {
+  if (kanalZmen || typeof db.channel !== 'function') return;
+  try {
+    kanalZmen = db.channel('naturclimb-zmeny')
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => naplanujObnovu())
+      .subscribe(stav => {
+        if (stav === 'SUBSCRIBED') {
+          console.log('🔄 Zivé zmeny zapnute');
+          zastavZalozniPolling();
+        } else if (stav === 'CHANNEL_ERROR' || stav === 'TIMED_OUT' || stav === 'CLOSED') {
+          console.warn('Zive zmeny nedostupne (nebezel SQL krok 16?):', stav);
+          spustZalozniPolling();
+        }
+      });
+  } catch (err) {
+    console.warn('Zive zmeny nedostupne:', err.message);
+    spustZalozniPolling();
+  }
+}
+
+function zastavSledovaniZmen() {
+  zastavZalozniPolling();
+  if (kanalZmen) {
+    try { db.removeChannel(kanalZmen); } catch (err) { /* nevadi */ }
+    kanalZmen = null;
+  }
+}
+
+// Kdyz zive zmeny nejedou, aspon se obcas podivame - jen kdyz se clovek
+// na appku doopravdy diva, at zbytecne nebudime telefon.
+function spustZalozniPolling() {
+  if (zalozniPolling) return;
+  zalozniPolling = setInterval(() => {
+    if (document.visibilityState === 'visible') naplanujObnovu(0);
+  }, 90000);
+}
+
+function zastavZalozniPolling() {
+  if (zalozniPolling) { clearInterval(zalozniPolling); zalozniPolling = null; }
+}
+
+async function obnovDataPoNavratu(minSekund) {
+  if (!state.currentUserId) return;
+  if (document.getElementById('modal-overlay')) return;   // otevreny dialog nerusime
+  if ((Date.now() - posledniNacteni) < minSekund * 1000) return;
+  posledniNacteni = Date.now();
+  await loadAllData();
+  render();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') obnovDataPoNavratu(30);
+});
+window.addEventListener('focus', () => obnovDataPoNavratu(30));
 
 function showToast(msg) {
   const toast = document.getElementById('toast');
@@ -1238,7 +1454,10 @@ function getSettings() {
     clubName: 'NaturClimb',
     bankAccount: '',
     debtLimit: -500,
-    creditLimit: 500
+    creditLimit: 500,
+    feeFull: 800,
+    feeReduced: 500,
+    feeSeasonStartMonth: 9
   };
 }
 
@@ -1262,7 +1481,14 @@ function render() {
     document.body.style.paddingTop = '32px';
   }
 
-  // Pokud se data teprve načítají nebo Supabase nereaguje
+  // Neprihlaseny clovek vidi prihlasovaci obrazovku - data zatim zadna nemame.
+  if (!state.currentUserId) {
+    app.innerHTML = renderLogin();
+    fab.classList.add('hidden');
+    return;
+  }
+
+  // Prihlaseny, ale nastaveni klubu se jeste nenacetlo
   if (!state.setup) {
     app.innerHTML = `
       <div style="text-align: center; padding: 60px 24px; color: white; text-shadow: 0 2px 6px rgba(0,0,0,0.5);">
@@ -1278,11 +1504,6 @@ function render() {
         </button>
       </div>
     `;
-    fab.classList.add('hidden');
-    return;
-  }
-  if (!state.currentUserId) {
-    app.innerHTML = renderLogin();
     fab.classList.add('hidden');
     return;
   }
@@ -1327,7 +1548,8 @@ function onFabClick() {
 // ============================================
 function renderLogin() {
   const settings = getSettings();
-  const hasMembers = state.members.length > 0;
+
+  if (state.ui.authStep === 'code') return renderLoginCode();
 
   return `
     <div class="login-screen">
@@ -1337,88 +1559,170 @@ function renderLogin() {
       <p>Zadej svůj email pro vstup do aplikace</p>
     </div>
 
-    ${!hasMembers ? `
-      <div style="background: rgba(255,100,50,0.15); border: 1.5px solid rgba(255,100,50,0.4); border-radius: 16px; padding: 20px; text-align: center; color: white; text-shadow: 0 1px 4px rgba(0,0,0,0.4);">
-        <div style="font-size: 32px; margin-bottom: 8px;">⚠️</div>
-        <div style="font-weight: 700; font-size: 16px; margin-bottom: 8px;">Problém s připojením</div>
-        <div style="font-size: 13px; opacity: 0.9; margin-bottom: 16px;">Aplikace se nemůže připojit k databázi nebo databáze neobsahuje žádné členy.</div>
-        <button onclick="location.reload()" style="padding: 10px 24px; background: rgba(255,255,255,0.2); color: white; border: 1.5px solid rgba(255,255,255,0.4); border-radius: 10px; font-size: 14px; cursor: pointer;">
-          🔄 Zkusit znovu
-        </button>
-        <div style="margin-top: 12px; font-size: 11px; opacity: 0.6;">
-          Pokud problém přetrvává, kontaktuj admina.
-        </div>
+    <div style="background: var(--paper-translucent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1.5px solid var(--ink); border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);">
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label style="font-size: 14px; margin-bottom: 8px;">Tvůj email</label>
+        <input type="email" id="login-email" placeholder="petr@example.cz"
+          autocomplete="email" inputmode="email" value="${escapeAttr(state.ui.authEmail || '')}"
+          style="width: 100%; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; font-family: inherit; font-size: 16px;"
+          onkeydown="if(event.key==='Enter') sendLoginCode()">
       </div>
-    ` : `
-      <div style="background: var(--paper-translucent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1.5px solid var(--ink); border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);">
-        <div class="form-group" style="margin-bottom: 12px;">
-          <label style="font-size: 14px; margin-bottom: 8px;">Tvůj email</label>
-          <input type="email" id="login-email" placeholder="petr@example.cz"
-            autocomplete="email" inputmode="email"
-            style="width: 100%; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; font-family: inherit; font-size: 16px;"
-            onkeydown="if(event.key==='Enter') tryLoginByEmail()">
-        </div>
-        <button class="btn btn-primary" style="width: 100%;" onclick="tryLoginByEmail()">
-          Pokračovat →
-        </button>
-        <div id="login-error" style="margin-top: 14px; color: var(--warning); font-size: 13px; display: none; text-align: center;"></div>
-      </div>
+      <button class="btn btn-primary" style="width: 100%;" id="login-send-btn" onclick="sendLoginCode()">
+        Poslat přihlašovací kód →
+      </button>
+      <div id="login-error" style="margin-top: 14px; color: var(--warning); font-size: 13px; display: none; text-align: center;"></div>
+    </div>
 
-      <div style="margin-top: 24px; text-align: center; font-size: 13px; color: var(--ink-soft);">
-        Nemáš ještě přístup?<br>
-        Napiš adminovi, aby tě přidal.
-      </div>
-    `}
+    <div style="margin-top: 24px; text-align: center; font-size: 13px; color: var(--ink-soft);">
+      Na e-mail ti přijde osmimístný kód.<br>
+      Nemáš ještě přístup? Napiš adminovi, aby tě přidal.
+    </div>
   `;
 }
 
-function tryLoginByEmail() {
+function renderLoginCode() {
+  const settings = getSettings();
+  return `
+    <div class="login-screen">
+      <div class="club-icon">📬</div>
+      <div class="club-logo">${settings.clubName}</div>
+      <h1>Kód je na cestě</h1>
+      <p>Poslali jsme ho na <b>${state.ui.authEmail}</b></p>
+    </div>
+
+    <div style="background: var(--paper-translucent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1.5px solid var(--ink); border-radius: 16px; padding: 20px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);">
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label style="font-size: 14px; margin-bottom: 8px;">Osmimístný kód z e-mailu</label>
+        <input type="text" id="login-code" placeholder="123456"
+          autocomplete="one-time-code" inputmode="numeric" maxlength="8"
+          style="width: 100%; padding: 14px; border: 1.5px solid var(--line); border-radius: 12px; font-family: inherit; font-size: 24px; letter-spacing: 8px; text-align: center;"
+          oninput="this.value = this.value.replace(/[^0-9]/g,''); maybeVerifyCode(this);"
+          onkeydown="if(event.key==='Enter') verifyLoginCode()">
+      </div>
+      <button class="btn btn-primary" style="width: 100%;" id="login-verify-btn" onclick="verifyLoginCode()">
+        Přihlásit se
+      </button>
+      <div id="login-error" style="margin-top: 14px; color: var(--warning); font-size: 13px; display: none; text-align: center;"></div>
+    </div>
+
+    <div style="margin-top: 24px; text-align: center; font-size: 13px; color: var(--ink-soft);">
+      Kód nepřišel? Mrkni do spamu, nebo
+      <a href="#" onclick="backToLoginEmail(); return false;" style="color: var(--ink); font-weight: 600;">zkus to znovu</a>.
+    </div>
+  `;
+}
+
+async function sendLoginCode() {
   const input = document.getElementById('login-email');
-  const errorEl = document.getElementById('login-error');
-  const email = input.value.trim().toLowerCase();
+  const email = (input.value || '').trim().toLowerCase();
 
-  if (!email) {
-    showLoginError('Zadej svůj email');
+  if (!email || !email.includes('@') || !email.includes('.')) {
+    showLoginError('Zadej platný e-mail (např. petr@example.cz)');
     return;
   }
 
-  if (!email.includes('@') || !email.includes('.')) {
-    showLoginError('Zadej platný email (např. petr@example.cz)');
+  const btn = document.getElementById('login-send-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Posílám…'; }
+
+  const { error } = await db.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: true }
+  });
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Poslat přihlašovací kód →'; }
+
+  if (error) {
+    console.error('signInWithOtp:', error);
+    showLoginError(/rate|limit|seconds/i.test(error.message || '')
+      ? 'Kód jsme právě posílali. Zkus to za chvíli znovu.'
+      : 'E-mail se nepodařilo odeslat. Zkus to prosím znovu.');
     return;
   }
 
-  // RATE LIMITING: Zpoždění 1 sekunda aby nedávalo smysl brute-force
-  input.disabled = true;
-  let countdown = 1;
-  const originalText = input.value;
-  
-  const timer = setInterval(() => {
-    countdown--;
-    if (countdown === 0) {
-      clearInterval(timer);
-      input.disabled = false;
-    }
-  }, 1000);
+  state.ui.authEmail = email;
+  state.ui.authStep = 'code';
+  render();
+  setTimeout(() => { const c = document.getElementById('login-code'); if (c) c.focus(); }, 50);
+}
 
-  // Najdi člena s tímto emailem
-  const member = state.members.find(m => m.email && m.email.toLowerCase() === email);
+// Prihlaseni spustime samo az po dopsani CELEHO kodu (8 cislic).
+// Drive se odesilalo uz po sesti - kdo psal rucne, nikdy nedopsal
+// a dostal chybu, i kdyz mel kod spravny.
+const LOGIN_CODE_LENGTH = 8;
 
-  if (!member) {
-    showLoginError('Tento email v systému nenajdu. Zkontroluj překlep nebo požádej admina o přidání.');
-    setTimeout(() => {
-      input.disabled = false;
-      clearInterval(timer);
-    }, 1000);
+function maybeVerifyCode(input) {
+  if (input.value.length >= LOGIN_CODE_LENGTH) verifyLoginCode();
+}
+
+function backToLoginEmail() {
+  state.ui.authStep = 'email';
+  render();
+}
+
+async function verifyLoginCode() {
+  if (state.ui.authBusy) return;
+  const input = document.getElementById('login-code');
+  const code = (input.value || '').trim();
+
+  if (code.length < LOGIN_CODE_LENGTH) {
+    showLoginError(`Kód má ${LOGIN_CODE_LENGTH} číslic – opiš ho celý`);
     return;
   }
 
-  // Nalezen → přihlásit
-  setTimeout(() => {
-    setCurrentUser(member.id);
-    state.currentView = (member.isAdmin || member.isSaunaAdmin) ? 'admin' : 'member';
-    showToast(`Vítej, ${member.name}! 👋`);
+  state.ui.authBusy = true;
+  const btn = document.getElementById('login-verify-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Ověřuji…'; }
+
+  const { error } = await db.auth.verifyOtp({
+    email: state.ui.authEmail,
+    token: code,
+    type: 'email'
+  });
+
+  state.ui.authBusy = false;
+  if (btn) { btn.disabled = false; btn.textContent = 'Přihlásit se'; }
+
+  if (error) {
+    console.error('verifyOtp:', error);
+    showLoginError('Kód nesedí nebo už vypršel. Zkontroluj ho, nebo si nech poslat nový.');
+    if (input) { input.focus(); input.select(); }
+    return;
+  }
+
+  await afterLogin();
+}
+
+// Spolecny zavěr prihlaseni: naparovat na clena, nacist data, vykreslit.
+async function afterLogin() {
+  document.getElementById('app').innerHTML = `
+    <div style="text-align: center; padding: 80px 20px; color: white; text-shadow: 0 2px 6px rgba(0,0,0,0.5);">
+      <div style="font-size: 48px; margin-bottom: 16px;">🧗</div>
+      <div style="font-family: 'Bricolage Grotesque', sans-serif; font-size: 20px;">Načítám…</div>
+    </div>
+  `;
+
+  const { data: memberId, error } = await db.rpc('link_my_account');
+
+  if (error || !memberId) {
+    console.error('link_my_account:', error);
+    await db.auth.signOut();
+    state.currentUserId = null;
+    state.ui.authStep = 'email';
     render();
-  }, 1000);
+    setTimeout(() => showLoginError('Tenhle e-mail není v seznamu členů klubu. Napiš adminovi, ať tě přidá.'), 60);
+    return;
+  }
+
+  setCurrentUser(memberId);
+  await loadAllData();
+
+  const me = getMember(memberId);
+  state.currentView = (me && (me.isAdmin || me.isSaunaAdmin)) ? 'admin' : 'member';
+  state.ui.authStep = 'email';
+
+  await autoGenerateSauna();
+  spustSledovaniZmen();
+  render();
 }
 
 function showLoginError(msg) {
@@ -1443,14 +1747,669 @@ function selectMember(id) {
   render();
 }
 
-function logout() {
+async function logout() {
+  zastavSledovaniZmen();
+  await db.auth.signOut();
   setCurrentUser(null);
+  // Data z pameti pryc, at je dalsi clovek u stejneho prohlizece nevidi.
+  state.members = [];
+  state.trainings = [];
+  state.cancelledTrainings = [];
+  state.transactions = [];
+  state.events = [];
+  state.eventRegistrations = [];
+  state.eventRides = [];
+  state.ui.authStep = 'email';
+  state.ui.authEmail = '';
+  state.currentView = 'member';
   render();
+}
+
+// ============================================
+// PLATBY NA ODDILOVY UCET A ROCNI PRISPEVKY
+// ============================================
+
+// Cesky ucet (predcisli-cislo/kod banky) -> IBAN, kvuli QR platbe.
+function ibanZCzUctu(ucet) {
+  const m = String(ucet || '').replace(/\s/g, '').match(/^(?:(\d{1,6})-)?(\d{1,10})\/(\d{4})$/);
+  if (!m) return null;
+  const predcisli = (m[1] || '').padStart(6, '0');
+  const cislo = m[2].padStart(10, '0');
+  const banka = m[3];
+  // kontrolni cislice: BBAN + "CZ00" prevedeno na cisla, mod 97
+  const bban = banka + predcisli + cislo;
+  const prevod = (bban + '123500').replace(/[A-Z]/g, ch => String(ch.charCodeAt(0) - 55));
+  let zbytek = 0;
+  for (const znak of prevod) zbytek = (zbytek * 10 + Number(znak)) % 97;
+  const kontrola = String(98 - zbytek).padStart(2, '0');
+  return 'CZ' + kontrola + bban;
+}
+
+// Retezec ceske QR platby (SPAYD)
+function spaydRetezec(iban, castka, zprava) {
+  const casti = ['SPD*1.0', 'ACC:' + iban, 'AM:' + Number(castka).toFixed(2), 'CC:CZK'];
+  if (zprava) casti.push('MSG:' + zprava.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').slice(0, 60));
+  return casti.join('*');
+}
+
+// QR knihovnu nacitame az kdyz je opravdu potreba.
+function nactiQrKnihovnu() {
+  if (window.qrcode) return Promise.resolve(true);
+  if (nactiQrKnihovnu._cekani) return nactiQrKnihovnu._cekani;
+  nactiQrKnihovnu._cekani = new Promise(resolve => {
+    const sc = document.createElement('script');
+    sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+    sc.onload = () => resolve(true);
+    sc.onerror = () => resolve(false);
+    document.head.appendChild(sc);
+  });
+  return nactiQrKnihovnu._cekani;
+}
+
+async function vykresliQr(elementId, text) {
+  const el = document.getElementById(elementId);
+  if (!el) return;
+  const ok = await nactiQrKnihovnu();
+  if (!ok || !window.qrcode) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--ink-soft);">QR kód se nepodařilo načíst – použij číslo účtu.</div>';
+    return;
+  }
+  const qr = window.qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  el.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+  const svg = el.querySelector('svg');
+  if (svg) { svg.style.width = '190px'; svg.style.height = '190px'; svg.style.background = 'white'; }
+}
+
+function mojeCekajiciPlatby() {
+  return (state.paymentClaims || [])
+    .filter(c => c.memberId === state.currentUserId && c.status === 'pending');
+}
+
+function mojeCekajiciPlatba() {
+  return mojeCekajiciPlatby()[0];
+}
+
+function cekajiciPlatbyClena(memberId) {
+  return (state.paymentClaims || [])
+    .filter(c => c.memberId === memberId && c.status === 'pending');
+}
+
+// Zelený puntík = letos uz dorazil prispevek (nebo jina potvrzena platba
+// aspon ve vysi zvyhodnene sazby).
+// ---- Sezona prispevku -------------------------------------------------
+// Sezona 2026/27 = 1. 9. 2026 az 31. 8. 2027. Zacatek se da v nastaveni
+// prepnout; mesic 1 znamena obycejny kalendarni rok.
+function sezonaZacatek() {
+  const m = parseInt(getSettings().feeSeasonStartMonth ?? 9);
+  return (m >= 1 && m <= 12) ? m : 9;
+}
+
+function aktualniSezona(kdy) {
+  const d = kdy ? new Date(kdy) : new Date();
+  return (d.getMonth() + 1) >= sezonaZacatek() ? d.getFullYear() : d.getFullYear() - 1;
+}
+
+function popisSezony(rok) {
+  if (sezonaZacatek() === 1) return String(rok);
+  return rok + '/' + String((rok + 1) % 100).padStart(2, '0');
+}
+
+function prispevekSezony(memberId, rok) {
+  const sezona = (rok == null) ? aktualniSezona() : rok;
+  return state.membershipFees.find(f => f.memberId === memberId && f.seasonYear === sezona) || null;
+}
+
+function sazbaPrispevku(typ) {
+  const s = getSettings();
+  return typ === 'reduced' ? (s.feeReduced ?? 500) : (s.feeFull ?? 800);
+}
+
+async function nactiPrispevky() {
+  const { data, error } = await db.from('membership_fees').select('*');
+  if (error) {
+    state.feesReady = false;
+    state.membershipFees = [];
+    console.warn('membership_fees nedostupne (nebezel SQL krok 11?):', error.message);
+    return;
+  }
+  state.feesReady = true;
+  state.membershipFees = (data || []).map(f => ({
+    id: f.id, memberId: f.member_id, seasonYear: f.season_year,
+    feeType: f.fee_type, amount: f.amount, paidAt: f.paid_at, note: f.note
+  }));
+}
+
+function maZaplacenyPrispevek(memberId, rok) {
+  // Po SQL kroku 11 je to skutecny zapis v membership_fees.
+  if (state.feesReady) return !!prispevekSezony(memberId, rok);
+
+  // Dokud krok 11 nebezel, zustava stary odhad podle transakci.
+  const settings = getSettings();
+  const r = new Date().getFullYear();
+  const prah = settings.feeReduced ?? 500;
+  return state.transactions.some(t =>
+    t.memberId === memberId &&
+    new Date(t.createdAt).getFullYear() === r &&
+    (t.type === 'membership_fee' || (t.amount >= prah && t.amount > 0))
+  );
+}
+
+// Stav formulare platby. Prispevek a dobiti jdou zaskrtnout oba naraz.
+let payForm = { fee: false, feeType: 'full', topup: false };
+
+// Kdo ma pravo na zvyhodneny prispevek. Ukazuje se v bublince na hover
+// a po kliknuti na "pro koho?" (kvuli mobilu, kde hover neexistuje).
+const TEXT_ZVYHODNENY = 'Zvýhodněný příspěvek je pro studenty, nezaměstnané, členy, kteří bydlí dál než 100 km od Prahy, a pro jednoho rodiče na rodičovské.';
+
+function prepniNapovedu(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('open');
+}
+
+function popisCekajiciPlatby(c) {
+  const fee = c.feeAmount || 0;
+  const top = c.topupAmount || 0;
+  if (fee > 0 || top > 0) {
+    const casti = [];
+    if (fee > 0) casti.push(`členský příspěvek ${fee} Kč (${popisSezony(c.seasonYear != null ? c.seasonYear : aktualniSezona())})`);
+    if (top > 0) casti.push(`dobití konta ${top} Kč`);
+    return casti.join(' + ');
+  }
+  // platba ohlasena starsi verzi appky
+  return c.kind === 'membership' ? `Členský příspěvek ${c.year || ''}` : 'Platba na konto';
+}
+
+function openPaymentDialog(predvybrano) {
+  const settings = getSettings();
+  const user = getCurrentUser();
+  const cekajiciSeznam = mojeCekajiciPlatby();
+  const dluh = Math.max(0, -recalcBalance(user.id));
+
+  // Dokud nebezel SQL krok 11, drzime stary dialog s jednou polozkou.
+  if (!state.feesReady) { dialogPlatbyStary(dluh); return; }
+
+  const sezona = aktualniSezona();
+  const jizZaplaceno = !!prispevekSezony(user.id, sezona);
+  const prispevekCeka = cekajiciSeznam.some(c => (c.feeAmount || 0) > 0 || c.kind === 'membership' || c.kind === 'both');
+
+  payForm = {
+    fee: (predvybrano === 'fee') && !jizZaplaceno && !prispevekCeka,
+    feeType: 'full',
+    topup: (predvybrano !== 'fee') || jizZaplaceno || prispevekCeka
+  };
+
+  const ucet = settings.bankAccount || '';
+  const iban = ibanZCzUctu(ucet);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">💸 Zaplatil jsem na oddílový účet</div>
+      <div class="modal-subtitle">Pošli převodem a tady to ohlas – admin platbu potvrdí podle výpisu.</div>
+    </div>
+
+    ${cekajiciSeznam.length ? `
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-bottom:14px;">
+        <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">
+          ⏳ Čeká na potvrzení adminem
+        </div>
+        ${cekajiciSeznam.map(c => `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0;">
+            <div style="font-size:13px;">
+              <strong>${c.amount} Kč</strong>
+              <div style="color:var(--ink-soft);font-size:12px;">
+                ${popisCekajiciPlatby(c)} · ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
+              </div>
+            </div>
+            <button class="btn btn-secondary" style="padding:5px 10px;font-size:12px;flex-shrink:0;"
+              onclick="zrusitMojiPlatbu('${c.id}')">Zrušit</button>
+          </div>`).join('')}
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">
+          Admin je potvrdí, až uvidí peníze na účtu. Posílat znovu není potřeba.
+        </div>
+      </div>
+    ` : ''}
+
+    <div class="form-group">
+      <label>${cekajiciSeznam.length ? 'Ohlásit další platbu' : 'Co platíš?'}
+        <span style="font-weight:400;color:var(--ink-soft);font-size:12px;">(můžeš vybrat i obojí)</span>
+      </label>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+
+        ${(jizZaplaceno || prispevekCeka) ? `
+          <div style="padding:12px 14px;border:1px dashed var(--line);border-radius:10px;font-size:13px;color:var(--ink-soft);">
+            🎫 Roční příspěvek ${popisSezony(sezona)} –
+            <strong>${jizZaplaceno ? 'už máš zaplaceno ✓' : 'už ohlášený, čeká na potvrzení'}</strong>
+          </div>
+        ` : `
+          <button class="btn-choice${payForm.fee ? ' selected' : ''}" id="pay-fee-toggle"
+            onclick="togglePrispevek()" style="text-align:left;padding:12px 14px;">
+            🎫 Roční příspěvek ${popisSezony(sezona)}
+          </button>
+          <div id="pay-fee-rates" style="display:${payForm.fee ? 'flex' : 'none'};gap:8px;padding-left:12px;align-items:stretch;">
+            <button class="btn-choice${payForm.feeType === 'full' ? ' selected' : ''}" data-fee="full"
+              onclick="vyberSazbu('full')" style="flex:1;padding:10px;font-size:13px;">
+              Plný<br><strong>${settings.feeFull} Kč</strong>
+            </button>
+            <div class="tip-wrap" id="tip-reduced" style="flex:1.6;">
+              <div class="tip-bubble">${TEXT_ZVYHODNENY}</div>
+              <button class="btn-choice${payForm.feeType === 'reduced' ? ' selected' : ''}" data-fee="reduced"
+                onclick="vyberSazbu('reduced')" style="width:100%;padding:12px 10px;font-size:13px;line-height:1.35;">
+                Zvýhodněný<br><strong>${settings.feeReduced} Kč</strong><br>
+                <span onclick="event.stopPropagation(); prepniNapovedu('tip-reduced');"
+                  style="font-size:11px;color:var(--ink-soft);text-decoration:underline;cursor:help;">
+                  pro koho? ⓘ
+                </span>
+              </button>
+            </div>
+          </div>
+        `}
+
+        <button class="btn-choice${payForm.topup ? ' selected' : ''}" id="pay-topup-toggle"
+          onclick="toggleDobiti()" style="text-align:left;padding:12px 14px;">
+          💰 Dobití konta${dluh > 0 ? ` – dlužíš ${dluh} Kč` : ''}
+        </button>
+        <div id="pay-topup-wrap" style="display:${payForm.topup ? 'block' : 'none'};padding-left:12px;">
+          <input type="number" id="pay-topup" min="1" max="100000" inputmode="numeric"
+            value="${dluh || ''}" placeholder="např. 1000" oninput="prepocitejPlatbu()">
+        </div>
+      </div>
+    </div>
+
+    <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;">
+        <span style="font-size:13px;color:var(--ink-soft);">Částka k zaplacení</span>
+        <strong id="pay-total" style="font-size:22px;">0 Kč</strong>
+      </div>
+      <div id="pay-breakdown" style="font-size:12px;color:var(--ink-soft);margin-top:4px;"></div>
+    </div>
+
+    ${ucet ? `
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;text-align:center;">
+        <div id="pay-qr" style="min-height:40px;display:flex;justify-content:center;align-items:center;">
+          <span style="font-size:12px;color:var(--ink-soft);">Vyber, co platíš, a naskočí QR kód</span>
+        </div>
+        <div style="margin-top:10px;font-size:14px;font-weight:600;">${ucet}</div>
+        <button class="copy-btn" style="margin-top:6px;" onclick="copyBank(event, '${ucet}')">Kopírovat číslo účtu</button>
+        ${iban ? '' : '<div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">QR kód neumím vytvořit – číslo účtu v nastavení není ve tvaru 123456789/0100.</div>'}
+      </div>
+    ` : `
+      <div style="background:var(--accent-dim);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;">
+        Admin ještě nevyplnil číslo oddílového účtu. Domluv se s ním na platbě.
+      </div>
+    `}
+
+    <div id="pay-error" style="color:var(--warning);font-size:13px;display:none;margin-bottom:8px;text-align:center;"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" id="pay-submit" onclick="odeslatOhlaseniPlatby()">Ohlásit platbu</button>
+    </div>
+  `);
+
+  prepocitejPlatbu();
+}
+
+function togglePrispevek() {
+  payForm.fee = !payForm.fee;
+  const b = document.getElementById('pay-fee-toggle');
+  if (b) b.classList.toggle('selected', payForm.fee);
+  const r = document.getElementById('pay-fee-rates');
+  if (r) r.style.display = payForm.fee ? 'flex' : 'none';
+  prepocitejPlatbu();
+}
+
+function vyberSazbu(typ) {
+  payForm.feeType = typ;
+  payForm.fee = true;
+  const b = document.getElementById('pay-fee-toggle');
+  if (b) b.classList.add('selected');
+  const r = document.getElementById('pay-fee-rates');
+  if (r) r.style.display = 'flex';
+  document.querySelectorAll('#pay-fee-rates [data-fee]').forEach(x =>
+    x.classList.toggle('selected', x.dataset.fee === typ));
+  prepocitejPlatbu();
+}
+
+function toggleDobiti() {
+  payForm.topup = !payForm.topup;
+  const b = document.getElementById('pay-topup-toggle');
+  if (b) b.classList.toggle('selected', payForm.topup);
+  const w = document.getElementById('pay-topup-wrap');
+  if (w) w.style.display = payForm.topup ? 'block' : 'none';
+  if (payForm.topup) {
+    const i = document.getElementById('pay-topup');
+    if (i) { i.focus(); i.select(); }
+  }
+  prepocitejPlatbu();
+}
+
+function dobitiZFormulare() {
+  if (!payForm.topup) return 0;
+  return parseInt(document.getElementById('pay-topup')?.value || '0') || 0;
+}
+
+function castkaKPlatbe() {
+  const stary = document.getElementById('pay-amount');
+  if (stary) return parseInt(stary.value || '0') || 0;
+  return (payForm.fee ? sazbaPrispevku(payForm.feeType) : 0) + dobitiZFormulare();
+}
+
+function prepocitejPlatbu() {
+  const fee = payForm.fee ? sazbaPrispevku(payForm.feeType) : 0;
+  const top = dobitiZFormulare();
+  const celkem = fee + top;
+
+  const totalEl = document.getElementById('pay-total');
+  if (totalEl) totalEl.textContent = celkem + ' Kč';
+
+  const bd = document.getElementById('pay-breakdown');
+  if (bd) {
+    const casti = [];
+    if (fee > 0) casti.push(`příspěvek ${fee} Kč (${payForm.feeType === 'reduced' ? 'zvýhodněný' : 'plný'}, ${popisSezony(aktualniSezona())})`);
+    if (top > 0) casti.push(`dobití konta ${top} Kč`);
+    bd.textContent = casti.length ? 'Z toho ' + casti.join(' + ') : 'Zaškrtni, co platíš.';
+  }
+
+  prekresliQrPlatby();
+}
+
+function prekresliQrPlatby() {
+  const settings = getSettings();
+  const iban = ibanZCzUctu(settings.bankAccount);
+  const castka = castkaKPlatbe();
+  const el = document.getElementById('pay-qr');
+  if (!el) return;
+  if (!iban || !castka || castka <= 0) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--ink-soft);">Vyber částku a naskočí QR kód</span>';
+    return;
+  }
+  const user = getCurrentUser();
+  vykresliQr('pay-qr', spaydRetezec(iban, castka, (user?.name || '') + ' ' + settings.clubName));
+}
+
+async function odeslatOhlaseniPlatby() {
+  const chyba = document.getElementById('pay-error');
+  const ukaz = text => { if (chyba) { chyba.textContent = text; chyba.style.display = 'block'; } };
+  const btn = document.getElementById('pay-submit');
+  const staryDialog = !!document.getElementById('pay-kind-buttons');
+
+  let rpcNazev, rpcArgs, celkem;
+
+  if (staryDialog) {
+    const vybrany = document.querySelector('#pay-kind-buttons .btn-choice.selected');
+    celkem = parseInt(document.getElementById('pay-amount')?.value || '0');
+    if (!vybrany) { ukaz('Vyber, co platíš'); return; }
+    if (!celkem || celkem <= 0) { ukaz('Zadej částku'); return; }
+    rpcNazev = 'claim_payment';
+    rpcArgs = { p_amount: celkem, p_kind: vybrany.dataset.kind, p_fee_type: vybrany.dataset.fee || null };
+  } else {
+    if (!payForm.fee && !payForm.topup) { ukaz('Zaškrtni, co platíš'); return; }
+    const top = dobitiZFormulare();
+    if (payForm.topup && top <= 0) { ukaz('Zadej částku dobití konta'); return; }
+    celkem = (payForm.fee ? sazbaPrispevku(payForm.feeType) : 0) + top;
+    if (celkem <= 0) { ukaz('Zadej částku'); return; }
+    rpcNazev = 'claim_payment2';
+    rpcArgs = { p_fee_type: payForm.fee ? payForm.feeType : null, p_topup_amount: top, p_keep_pending: true };
+  }
+
+  if (celkem > 100000) { ukaz('Tak velkou částku radši dohodni s adminem osobně'); return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Odesílám…'; }
+
+  let { error } = await db.rpc(rpcNazev, rpcArgs);
+  let nahradilo = false;
+
+  // Dokud nebezel SQL krok 15, funkce treti parametr nezna a nove
+  // ohlaseni nahradi to predchozi. Zkusime to tedy postaru a rekneme to.
+  if (error && rpcArgs.p_keep_pending && (error.code === 'PGRST202' || /claim_payment2/i.test(error.message || ''))) {
+    const { p_keep_pending, ...bezPriznaku } = rpcArgs;
+    ({ error } = await db.rpc(rpcNazev, bezPriznaku));
+    nahradilo = !error && mojeCekajiciPlatby().length > 0;
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Ohlásit platbu'; }
+  if (error) { showDbError(error, 'Ohlášení se nepovedlo'); return; }
+
+  await nactiPlatby();
+  closeModal();
+  showToast(nahradilo
+    ? '✓ Platba ohlášena – nahradila předchozí ohlášení'
+    : '✓ Platba ohlášena – admin ji potvrdí');
+  render();
+}
+
+// Dialog pred SQL krokem 11: jedna polozka, jedna castka.
+function dialogPlatbyStary(dluh) {
+  const settings = getSettings();
+  const ucet = settings.bankAccount || '';
+  const iban = ibanZCzUctu(ucet);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">💸 Zaplatil jsem na oddílový účet</div>
+      <div class="modal-subtitle">Pošli převodem a tady to ohlas – admin platbu potvrdí podle výpisu.</div>
+    </div>
+
+    <div class="form-group">
+      <label>Co platíš?</label>
+      <div id="pay-kind-buttons" style="display:flex;flex-direction:column;gap:8px;margin-top:6px;">
+        <button class="btn-choice" data-kind="membership" data-fee="full" data-amount="${settings.feeFull}"
+          onclick="vyberTypPlatby(this)" style="text-align:left;padding:12px 14px;">
+          🎫 Roční příspěvek – <strong>${settings.feeFull} Kč</strong>
+        </button>
+        <button class="btn-choice" data-kind="membership" data-fee="reduced" data-amount="${settings.feeReduced}"
+          onclick="vyberTypPlatby(this)" style="text-align:left;padding:12px 14px;">
+          🎫 Roční příspěvek zvýhodněný – <strong>${settings.feeReduced} Kč</strong>
+        </button>
+        <button class="btn-choice" data-kind="topup" data-fee="" data-amount="${dluh || ''}"
+          onclick="vyberTypPlatby(this)" style="text-align:left;padding:12px 14px;">
+          💰 Dobití konta${dluh > 0 ? ` – dlužíš ${dluh} Kč` : ''}
+        </button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Částka (Kč)</label>
+      <input type="number" id="pay-amount" min="1" max="100000" inputmode="numeric"
+        placeholder="800" oninput="prekresliQrPlatby()">
+    </div>
+
+    ${ucet ? `
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:14px;margin-bottom:12px;text-align:center;">
+        <div id="pay-qr" style="min-height:40px;display:flex;justify-content:center;align-items:center;">
+          <span style="font-size:12px;color:var(--ink-soft);">Vyber částku a naskočí QR kód</span>
+        </div>
+        <div style="margin-top:10px;font-size:14px;font-weight:600;">${ucet}</div>
+        <button class="copy-btn" style="margin-top:6px;" onclick="copyBank(event, '${ucet}')">Kopírovat číslo účtu</button>
+        ${iban ? '' : '<div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">QR kód neumím vytvořit – číslo účtu v nastavení není ve tvaru 123456789/0100.</div>'}
+      </div>
+    ` : `
+      <div style="background:var(--accent-dim);border-radius:10px;padding:12px;margin-bottom:12px;font-size:13px;">
+        Admin ještě nevyplnil číslo oddílového účtu. Domluv se s ním na platbě.
+      </div>
+    `}
+
+    <div id="pay-error" style="color:var(--warning);font-size:13px;display:none;margin-bottom:8px;text-align:center;"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
+      <button class="btn btn-primary" id="pay-submit" onclick="odeslatOhlaseniPlatby()">Ohlásit platbu</button>
+    </div>
+  `);
+}
+
+function vyberTypPlatby(btn) {
+  document.querySelectorAll('#pay-kind-buttons .btn-choice').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  const castka = btn.dataset.amount;
+  const vstup = document.getElementById('pay-amount');
+  if (vstup && castka) vstup.value = castka;
+  prekresliQrPlatby();
+}
+
+async function zrusitMojiPlatbu(claimId) {
+  const { error } = await db.rpc('cancel_my_claim', { p_claim_id: claimId });
+  if (error) { showDbError(error, 'Zrušení se nepovedlo'); return; }
+  await nactiPlatby();
+  closeModal();
+  showToast('Ohlášení zrušeno');
+  render();
+}
+
+async function nactiPlatby() {
+  const { data, error } = await db.from('payment_claims').select('*').order('created_at', { ascending: false });
+  if (error) { console.error('nactiPlatby:', error); return; }
+  state.paymentClaims = (data || []).map(c => ({
+    id: c.id, memberId: c.member_id, amount: c.amount,
+    kind: c.kind, feeType: c.fee_type, year: c.year,
+    feeAmount: c.fee_amount || 0, topupAmount: c.topup_amount || 0,
+    seasonYear: c.season_year != null ? c.season_year : c.year,
+    status: c.status, note: c.note,
+    createdAt: c.created_at, decidedAt: c.decided_at
+  }));
+}
+
+async function potvrditPlatbu(claimId, memberId) {
+  const { error } = await db.rpc('confirm_payment_claim', { p_claim_id: claimId });
+  if (error) { showDbError(error, 'Potvrzení se nepovedlo'); return; }
+  await loadAllData();
+  showToast('✓ Platba potvrzena a připsána');
+  render();
+  if (memberId) openMemberDetail(memberId);   // at admin zustane, kde byl
+}
+
+async function zamitnoutPlatbu(claimId, memberId) {
+  if (!confirm('Opravdu zamítnout? Člen uvidí, že platba neprošla.')) return;
+  const { error } = await db.rpc('reject_payment_claim', { p_claim_id: claimId, p_note: null });
+  if (error) { showDbError(error, 'Zamítnutí se nepovedlo'); return; }
+  await nactiPlatby();
+  showToast('Platba zamítnuta');
+  render();
+  if (memberId) openMemberDetail(memberId);
+}
+
+function vysvetliPuntik() {
+  const settings = getSettings();
+  if (state.feesReady) {
+    showToast(`Zelená = má zaplacený příspěvek na sezónu ${popisSezony(state.ui.feeSeason ?? aktualniSezona())}. Červená = zatím ne.`);
+    return;
+  }
+  showToast(`Zelená = letos dorazil příspěvek (nebo jiná platba aspoň ${settings.feeReduced} Kč). Červená = zatím nic.`);
+}
+
+function renderAdminPayments() {
+  const cekajici = (state.paymentClaims || []).filter(c => c.status === 'pending');
+  if (cekajici.length === 0) return '';
+
+  return `
+    <div class="section-title" style="margin-top: 8px;">💸 Platby k potvrzení (${cekajici.length})</div>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">
+      Potvrď až podle bankovního výpisu – teprve tím se částka připíše na konto.
+    </div>
+    ${cekajici.map(c => {
+      const m = getMember(c.memberId);
+      return `
+        <div class="admin-list-item" style="align-items:flex-start;">
+          <div class="member-avatar" style="margin-top:2px;">${getInitials(m ? m.name : '?')}</div>
+          <div class="info">
+            <div class="title">${m ? m.name : 'Neznámý člen'} · ${c.amount} Kč</div>
+            <div class="subtitle">
+              ${popisCekajiciPlatby(c)}
+              · ohlášeno ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
+            </div>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="btn btn-primary" style="padding:6px 14px;font-size:13px;"
+                onclick="potvrditPlatbu('${c.id}')">✓ Potvrdit</button>
+              <button class="btn btn-secondary" style="padding:6px 14px;font-size:13px;"
+                onclick="zamitnoutPlatbu('${c.id}')">Zamítnout</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('')}
+  `;
 }
 
 // ============================================
 // MEMBER VIEW
 // ============================================
+// ============================================
+// DOCASNA KARTICKA O OPRAVE CENY AKCE
+// ============================================
+// Kdyz admin pri zuctovani zmeni ceny, dorovna se rozdil tem, kdo se uz
+// vyuctovali sami. V historii konta to zustava navzdy, tady se to clenovi
+// jeste pripomene - 14 dni, nebo dokud neklikne na "Rozumim".
+const DNI_UPOZORNENI_NA_OPRAVU = 14;
+
+function klicSkrytychOprav() {
+  return 'nc_skryte_opravy_' + (state.currentUserId || 'x');
+}
+
+function nactiSkryteOpravy() {
+  try {
+    const raw = localStorage.getItem(klicSkrytychOprav());
+    const pole = raw ? JSON.parse(raw) : [];
+    return Array.isArray(pole) ? pole : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function mojeOpravyCen() {
+  const user = getCurrentUser();
+  if (!user) return [];
+  const hranice = Date.now() - DNI_UPOZORNENI_NA_OPRAVU * 24 * 60 * 60 * 1000;
+  const skryte = nactiSkryteOpravy();
+  return state.transactions.filter(t =>
+    t.memberId === user.id &&
+    t.type === 'event_adjustment' &&
+    t.amount !== 0 &&
+    new Date(t.createdAt).getTime() >= hranice &&
+    !skryte.includes(t.id)
+  );
+}
+
+function skryjOpravyCen() {
+  const ids = mojeOpravyCen().map(t => t.id);
+  try {
+    localStorage.setItem(klicSkrytychOprav(), JSON.stringify([...nactiSkryteOpravy(), ...ids]));
+  } catch (err) {
+    // Kdyz prohlizec uloziste nema, karticka se proste ukaze zase - nevadi.
+    console.warn('skryjOpravyCen:', err.message);
+  }
+  render();
+}
+
+function renderOpravyCen() {
+  const opravy = mojeOpravyCen();
+  if (opravy.length === 0) return '';
+
+  const soucet = opravy.reduce((s, t) => s + t.amount, 0);
+  const vraceno = soucet > 0;
+  const barva = vraceno
+    ? { ram: 'var(--green)', text: 'var(--green)' }
+    : { ram: 'var(--accent)', text: 'var(--accent)' };
+
+  return `
+    <div style="background:var(--paper);border:1.5px solid ${barva.ram};border-radius:12px;padding:14px;margin-bottom:16px;box-shadow:0 2px 10px rgba(0,0,0,0.08);">
+      <div style="font-weight:700;font-size:15px;color:${barva.text};margin-bottom:2px;">
+        ${vraceno ? '🎁 Vrátili jsme ti ' : '➕ Doúčtovali jsme ti '}${formatKc(Math.abs(soucet)).replace('+', '')}
+      </div>
+      <div style="font-size:12px;color:var(--ink-soft);line-height:1.5;">
+        ${opravy.map(t => `${t.description || 'Oprava ceny akce'} · ${formatDate(t.createdAt)}`).join('<br>')}
+      </div>
+      <button class="btn btn-secondary" style="width:100%;margin-top:10px;padding:8px;font-size:13px;"
+        onclick="skryjOpravyCen()">Rozumím</button>
+    </div>`;
+}
+
 function renderMember() {
   const user = getCurrentUser();
   const settings = getSettings();
@@ -1527,6 +2486,53 @@ function renderMember() {
       ${warning}
     </div>
 
+    ${renderOpravyCen()}
+
+    ${(() => {
+      // Vyzva k zaplaceni prispevku. Objevi se jen kdyz neni zaplaceno
+      // a zmizi, az admin platbu potvrdi.
+      if (!state.feesReady) return '';
+      if (prispevekSezony(user.id)) return '';
+
+      const cekaPrispevek = mojeCekajiciPlatby()
+        .some(c => (c.feeAmount || 0) > 0 || c.kind === 'membership' || c.kind === 'both');
+      if (cekaPrispevek) {
+        return `
+          <div class="fee-cta">
+            <div class="fee-cta-title">⏳ Příspěvek ohlášen</div>
+            <div class="fee-cta-sub">Sezóna ${popisSezony(aktualniSezona())} · čeká na potvrzení adminem. Posílat znovu není potřeba.</div>
+          </div>`;
+      }
+
+      return `
+        <div class="fee-cta">
+          <div class="fee-cta-title">🎫 Je čas zaplatit členské příspěvky</div>
+          <div class="fee-cta-sub">
+            Sezóna ${popisSezony(aktualniSezona())} · ${settings.feeFull} Kč, zvýhodněný ${settings.feeReduced} Kč
+          </div>
+          <button class="btn btn-primary" style="width:100%;" onclick="openPaymentDialog('fee')">
+            Zaplatit příspěvek →
+          </button>
+        </div>`;
+    })()}
+
+    ${(() => {
+      // Tlacitko zustava i kdyz uz neco ceka - clovek muze ohlasit dalsi platbu.
+      const ceka = mojeCekajiciPlatby();
+      const soucet = ceka.reduce((s, c) => s + c.amount, 0);
+      return `
+        <button class="btn btn-secondary" style="width:100%;margin-bottom:${ceka.length ? '6px' : '16px'};"
+          onclick="openPaymentDialog()">
+          💸 Zaplatil jsem na oddílový účet
+        </button>
+        ${ceka.length ? `
+          <div onclick="openPaymentDialog()" style="cursor:pointer;text-align:center;font-size:12px;color:var(--ink-soft);margin-bottom:16px;">
+            ⏳ ${soucet} Kč čeká na potvrzení adminem${ceka.length > 1 ? ` (${ceka.length} platby)` : ''}
+          </div>
+        ` : ''}
+      `;
+    })()}
+
     <div class="section-title">Nadcházející tréninky</div>
 
     ${upcoming.length === 0 ? `
@@ -1536,7 +2542,7 @@ function renderMember() {
       </div>
     ` : upcoming.map(t => renderTrainingCard(t, user.id)).join('')}
 
-    ${state.events.length > 0 ? `
+    ${akceProClena().length > 0 ? `
       <div class="section-title" style="margin-top: 20px;">🏕️ Akce oddílu</div>
       ${renderMemberEvents()}
     ` : ''}
@@ -1557,6 +2563,10 @@ function renderHeader() {
       <div>
         <div class="club-name">🧗 ${settings.clubName}</div>
         <h1>Ahoj ${user.name.split(' ')[0]}! 👋</h1>
+        ${(() => {
+          const fee = state.feesReady ? prispevekSezony(user.id) : null;
+          return fee ? `<div><span class="fee-stamp">✓ Příspěvky zaplaceny ${popisSezony(fee.seasonYear)}</span></div>` : '';
+        })()}
       </div>
       <div class="user-info">
         <button class="logout-btn" onclick="logout()">Odhlásit</button>
@@ -1697,26 +2707,49 @@ function openEventForm(editId) {
     </div>
     <div class="form-group">
       <label>Začátek akce</label>
-      <input type="datetime-local" id="ev-start" value="${editing ? editing.startDatetime.slice(0,16) : ''}">
+      <input type="datetime-local" id="ev-start" value="${editing ? toLocalInput(editing.startDatetime) : ''}">
     </div>
     <div class="form-group">
       <label>Konec akce</label>
-      <input type="datetime-local" id="ev-end" value="${editing ? editing.endDatetime.slice(0,16) : ''}">
+      <input type="datetime-local" id="ev-end" value="${editing ? toLocalInput(editing.endDatetime) : ''}">
     </div>
     <div class="section-title" style="margin: 16px 0 8px;">Ubytování</div>
     <div class="form-group">
       <label>Cena ubytování za noc (Kč / z konta)</label>
       <input type="number" id="ev-acc" placeholder="300" min="0" value="${editing ? editing.priceAccommodation : ''}">
     </div>
-    <div class="section-title" style="margin: 16px 0 8px;">Piva</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
-      <div class="form-group" style="margin:0;"><label>Název piva 1</label><input type="text" id="ev-b1name" placeholder="Kozel 10°" value="${editing ? editing.beer1Name : ''}"></div>
-      <div class="form-group" style="margin:0;"><label>Cena piva 1 (Kč)</label><input type="number" id="ev-b1price" placeholder="45" min="0" value="${editing ? editing.beer1Price : ''}"></div>
+    <div class="form-group">
+      <label>Zvýhodněná cena za noc (Kč)</label>
+      <input type="number" id="ev-acc-red" placeholder="150" min="0" value="${editing && editing.priceAccommodationReduced ? editing.priceAccommodationReduced : ''}">
+      <div style="font-size: 12px; color: var(--ink-soft); margin-top: 4px;">
+        Pro děti nebo pro ty, co spí ve vlastním stanu. Nech prázdné, pokud se u téhle akce nerozlišuje.
+      </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-      <div class="form-group" style="margin:0;"><label>Název piva 2</label><input type="text" id="ev-b2name" placeholder="Bernard 12°" value="${editing ? editing.beer2Name : ''}"></div>
-      <div class="form-group" style="margin:0;"><label>Cena piva 2 (Kč)</label><input type="number" id="ev-b2price" placeholder="55" min="0" value="${editing ? editing.beer2Price : ''}"></div>
+    <div class="section-title" style="margin: 16px 0 4px;">Položky k objednání</div>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+      Pivo, limonáda, víno, snídaně… Co nevyplníš, se u akce vůbec nezobrazí.
     </div>
+    ${PREDLOHY_POLOZEK.slice(0, POCET_SLOTU_POLOZEK()).map((predloha, idx) => {
+      const slot = SLOTY_POLOZEK[idx];
+      const nazev = editing ? (editing[slot.nameKey] || '') : '';
+      const cena = editing && editing[slot.priceKey] ? editing[slot.priceKey] : '';
+      return `
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:8px;margin-bottom:8px;">
+          <div class="form-group" style="margin:0;">
+            <label>${idx + 1}. položka – název</label>
+            <input type="text" id="ev-pol${slot.i}-name" placeholder="${predloha.nazev}" value="${escapeAttr(nazev)}">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label>Cena (Kč)</label>
+            <input type="number" id="ev-pol${slot.i}-price" placeholder="${predloha.cena}" min="0" value="${cena}">
+          </div>
+        </div>`;
+    }).join('')}
+    ${state.itemsReady ? '' : `
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+        Další položky naskočí, až admin pustí SQL krok 12.
+      </div>
+    `}
     <div class="form-actions">
       ${editing ? `<button class="btn btn-danger" onclick="deleteEvent('${editing.id}')">Smazat</button>` : ''}
       <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
@@ -1732,21 +2765,31 @@ async function saveEventForm(editId) {
   const start = document.getElementById('ev-start').value;
   const end = document.getElementById('ev-end').value;
   const acc = parseInt(document.getElementById('ev-acc').value) || 0;
-  const b1name = document.getElementById('ev-b1name').value.trim();
-  const b1price = parseInt(document.getElementById('ev-b1price').value) || 0;
-  const b2name = document.getElementById('ev-b2name').value.trim();
-  const b2price = parseInt(document.getElementById('ev-b2price').value) || 0;
+  const accRed = parseInt(document.getElementById('ev-acc-red').value) || 0;
+  // polozky 1..6 (co je prazdne, zustane prazdne a nikde se neukaze)
+  const polozky = {};
+  SLOTY_POLOZEK.forEach(slot => {
+    const nazev = (document.getElementById(`ev-pol${slot.i}-name`)?.value || '').trim();
+    const cena = parseInt(document.getElementById(`ev-pol${slot.i}-price`)?.value) || 0;
+    polozky[slot.nameKey] = nazev;
+    polozky[slot.priceKey] = nazev ? cena : 0;
+  });
   if (!name || !venue || !start || !end) { showToast('Vyplň název, místo, začátek a konec'); return; }
   if (new Date(end) <= new Date(start)) { showToast('Konec musí být po začátku'); return; }
   let event;
   if (editId) {
     event = getEvent(editId);
-    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price });
+    Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed }, polozky);
   } else {
-    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, beer1Name: b1name, beer1Price: b1price, beer2Name: b2name, beer2Price: b2price, status: 'open', createdAt: new Date().toISOString() };
+    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, ...polozky, status: 'open', createdAt: new Date().toISOString() };
     state.events.push(event);
   }
-  await saveEvent(event);
+  const ulozeno = await saveEvent(event);
+  if (!ulozeno) {
+    if (!editId) state.events = state.events.filter(x => x.id !== event.id);
+    render();
+    return;   // modal zustava otevreny
+  }
   closeModal();
   showToast(`✓ Akce "${name}" uložena`);
   render();
@@ -1770,8 +2813,13 @@ function openEventDetail(eventId) {
   if (!e) return;
   const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
   const nights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
-  const totalBeer1 = regs.reduce((s,r) => s + (r.beer1Count||0), 0);
-  const totalBeer2 = regs.reduce((s,r) => s + (r.beer2Count||0), 0);
+
+  // Filtr: koho je potreba zuctovat rucne (kdo si to neudelal sam)
+  const filtrReg = state.ui.eventRegFilter || 'all';
+  const nezuctovani = regs.filter(r => !r.settledAt);
+  const zuctovaniSami = regs.filter(r => r.settledAt);
+  const vypis = filtrReg === 'unsettled' ? nezuctovani
+              : (filtrReg === 'settled' ? zuctovaniSami : regs);
   const html = `
     <div class="modal-handle"></div>
     <button class="modal-close" onclick="closeModal()">×</button>
@@ -1781,36 +2829,317 @@ function openEventDetail(eventId) {
     </div>
     <div class="quick-actions">
       <button onclick="openEventForm('${e.id}')">✎ Upravit</button>
+      <button onclick="openEventSummary('${e.id}')">📊 Přehled</button>
+      ${e.status !== 'settled' ? `<button onclick="openEventAttendeePicker('${e.id}')">+ Přidat účastníka</button>` : ''}
       ${e.status !== 'settled' ? `<button onclick="settleEvent('${e.id}')" style="background:var(--ink);color:white;">💰 Zúčtovat</button>` : '<span class="status-badge settled">Zúčtováno</span>'}
     </div>
+    <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px;">
+      <div style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;">
+        <span>🧾 Vlastní vyúčtování členů</span>
+        <strong>${e.status === 'settled' ? 'uzavřeno (akce zúčtována)' : (lzeSeVyuctovat(e) ? `otevřeno do ${popisTerminu(e)}` : `zavřeno ${popisTerminu(e)}`)}</strong>
+      </div>
+      ${e.status !== 'settled' ? (state.deadlineReady ? `
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+            onclick="prodluzLhutu('${e.id}', 5)">${lzeSeVyuctovat(e) ? '+5 dní' : 'Otevřít znovu na 5 dní'}</button>
+          <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+            onclick="prodluzLhutu('${e.id}', 14)">${lzeSeVyuctovat(e) ? '+14 dní' : 'Otevřít na 14 dní'}</button>
+        </div>
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">
+          Výchozí lhůta je konec akce + ${DNI_NA_VYUCTOVANI} dní. Tlačítkem ji posuneš od teď.
+        </div>
+      ` : `
+        <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">
+          Posouvat lhůtu půjde, až pustíš SQL krok 13.
+        </div>
+      `) : ''}
+    </div>
+
     <div class="section-title" style="margin-top:12px;">Přihlášení (${regs.length})</div>
-    ${regs.length === 0 ? '<div class="empty-msg" style="padding:12px;">Nikdo nepřihlášen</div>' : `<ul style="list-style:none;">${regs.map(r => {
+    ${regs.length === 0 ? '' : `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        <button class="btn-choice${filtrReg === 'all' ? ' selected' : ''}" style="padding:6px 10px;font-size:12px;"
+          onclick="setEventRegFilter('all','${e.id}')">Všichni ${regs.length}</button>
+        <button class="btn-choice${filtrReg === 'unsettled' ? ' selected' : ''}" style="padding:6px 10px;font-size:12px;"
+          onclick="setEventRegFilter('unsettled','${e.id}')">⏳ Nezúčtovaní ${nezuctovani.length}</button>
+        <button class="btn-choice${filtrReg === 'settled' ? ' selected' : ''}" style="padding:6px 10px;font-size:12px;"
+          onclick="setEventRegFilter('settled','${e.id}')">🧾 Zúčtovaní sami ${zuctovaniSami.length}</button>
+      </div>
+    `}
+    ${regs.length === 0 ? '<div class="empty-msg" style="padding:12px;">Nikdo nepřihlášen</div>'
+      : (vypis.length === 0 ? `<div class="empty-msg" style="padding:12px;">${filtrReg === 'unsettled' ? 'Všichni se zúčtovali sami. 👏' : 'Nikdo se sám nezúčtoval.'}</div>`
+      : `<ul style="list-style:none;">${vypis.map(r => {
       const m = getMember(r.memberId); if (!m) return '';
-      const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+      const defaultNights = nociAkce(e);
       const rNights = r.nights ?? defaultNights;
-      const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
+      const beers = popisSpotreby(e, r);
       const arr = r.arrivalDatetime ? `příjezd ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
       const updatedBadge = r.updatedAt && r.updatedAt !== r.createdAt
         ? `<span style="font-size:10px;background:#fff3cd;color:#856404;padding:2px 6px;border-radius:10px;margin-left:4px;">Upraveno ${new Date(r.updatedAt).toLocaleString('cs-CZ',{day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}</span>`
         : '';
-      const total = rNights*e.priceAccommodation + (r.beer1Count||0)*e.beer1Price + (r.beer2Count||0)*e.beer2Price;
+      const rNightsRed = r.nightsReduced || 0;
+      const total = cenaPrihlasky(e, r, rNights);
       return `<li class="attendee" style="align-items:flex-start;padding:10px 0;">
         <div class="member-avatar" style="margin-top:2px;">${getInitials(m.name)}</div>
         <div style="flex:1;">
           <div class="attendee-name">${m.name}${updatedBadge}</div>
-          <div style="font-size:12px;color:var(--ink-soft);">${rNights} nocí · ${[beers,arr].filter(Boolean).join(' · ')}</div>
+          <div style="font-size:12px;color:var(--ink-soft);">${[popisNoci(rNights, rNightsRed), beers, arr].filter(Boolean).join(' · ')}</div>
+          ${r.settledAt ? `<div style="font-size:12px;color:var(--primary);font-weight:600;margin-top:2px;">🧾 Vyúčtoval/a se sám/sama · ${r.settledAmount || 0} Kč</div>` : ''}
           <div style="font-size:12px;font-weight:600;color:var(--primary);margin-top:2px;">Celkem: ${total} Kč</div>
         </div>
-        ${e.status !== 'settled' ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
+        ${e.status !== 'settled' && !r.settledAt ? `<button onclick="adminEditEventReg('${e.id}','${r.memberId}')" style="font-size:12px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:white;cursor:pointer;flex-shrink:0;margin-top:2px;">✎</button>` : ''}
       </li>`;
-    }).join('')}</ul>`}
+    }).join('')}</ul>`)}
     <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px;margin-top:12px;font-size:13px;">
       <strong>Shrnutí:</strong><br>
-      ${e.beer1Name?`${e.beer1Name}: ${totalBeer1} ks · `:''}${e.beer2Name?`${e.beer2Name}: ${totalBeer2} ks`:''}${(e.beer1Name||e.beer2Name)?'<br>':''}
-      Ubytování: individuální dle člena (viz výše)
+      ${polozkyAkce(e).map(polozka =>
+        `${polozka.name}: ${regs.reduce((sum, r) => sum + pocetPolozky(r, polozka), 0)} ks`).join(' · ') || 'Bez položek'}<br>
+      Ubytování: individuálně dle člena (viz výše)
     </div>
+    <button class="btn btn-secondary" style="width:100%;margin-top:10px;" onclick="openEventSummary('${e.id}')">
+      📊 Přehled vyúčtování po položkách →
+    </button>
   `;
   openModal(html);
+}
+
+function setEventRegFilter(f, eventId) {
+  state.ui.eventRegFilter = f;
+  openEventDetail(eventId);
+}
+
+// Admin prida na akci cloveka, ktery se sam neprihlasil (stejne jako
+// u treninku). Zalozi prihlasku s vychozim poctem noci; pocty polozek
+// si pak uz uprav tuzkou u jeho radku.
+function openEventAttendeePicker(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  const uz = new Set(state.eventRegistrations.filter(r => r.eventId === eventId).map(r => r.memberId));
+  const volni = state.members
+    .filter(m => m.isActive !== false && !uz.has(m.id))
+    .sort((a, b) => a.name.localeCompare(b.name, 'cs'));
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="openEventDetail('${eventId}')">×</button>
+    <div class="modal-header">
+      <div class="modal-title">+ Přidat účastníka</div>
+      <div class="modal-subtitle">${e.name} · kdo další jel?</div>
+    </div>
+
+    ${volni.length === 0 ? `
+      <div class="empty-msg" style="padding:16px;">Všichni členové už jsou přihlášení.</div>
+    ` : `
+      <input type="text" class="search-box" id="add-search" autocomplete="off"
+        placeholder="🔍 Hledej člena…"
+        oninput="filterPickerList(this.value)">
+
+      <ul style="list-style:none;" id="picker-list">
+        ${volni.map(m => `
+          <li class="attendee picker-item" data-name="${escapeAttr(normText(m.name))}"
+            onclick="pridejUcastnikaAkce('${eventId}', '${m.id}')" style="cursor:pointer;">
+            <div class="member-avatar">${getInitials(m.name)}</div>
+            <div class="attendee-name">${m.name}</div>
+            <div style="color:var(--primary);font-size:18px;">+</div>
+          </li>`).join('')}
+      </ul>
+
+      <div style="font-size:12px;color:var(--ink-soft);margin-top:10px;">
+        Založí se přihláška na ${nociAkce(e)} nocí bez položek.
+        Počty mu pak upravíš tužkou u jeho řádku.
+      </div>
+    `}
+
+    <button class="btn btn-secondary" style="width:100%;margin-top:16px;" onclick="openEventDetail('${eventId}')">
+      Hotovo – zpět na akci
+    </button>
+  `);
+}
+
+async function pridejUcastnikaAkce(eventId, memberId) {
+  const e = getEvent(eventId);
+  const m = getMember(memberId);
+  if (!e || !m) return;
+  if (state.eventRegistrations.some(r => r.eventId === eventId && r.memberId === memberId)) {
+    showToast('Tenhle člověk už přihlášený je');
+    return;
+  }
+
+  const ted = new Date().toISOString();
+  const reg = {
+    id: genId(), eventId, memberId,
+    nights: nociAkce(e), nightsReduced: 0,
+    ...Object.fromEntries(SLOTY_POLOZEK.map(slot => [slot.countKey, 0])),
+    arrivalDatetime: null, updatedAt: ted, createdAt: ted
+  };
+  state.eventRegistrations.push(reg);
+
+  const ulozeno = await saveEventRegistration_db(reg);
+  if (!ulozeno) {
+    // Uklid: at aplikace neukazuje prihlasku, ktera v databazi neni.
+    state.eventRegistrations = state.eventRegistrations.filter(r => r.id !== reg.id);
+    openEventAttendeePicker(eventId);
+    return;
+  }
+
+  showToast(`✓ ${m.name.split(' ')[0]} přidán/a na akci`);
+  openEventAttendeePicker(eventId);   // at jich jde pridat vic za sebou
+  render();
+}
+
+// ============================================
+// PREHLED VYUCTOVANI AKCE
+// ============================================
+// Kolik se na akci vybralo po polozkach: ubytovani plne a zvyhodnene
+// plus vsech sest polozek. Pocty se berou z prihlasek - u toho, kdo se
+// vyuctoval sam, jsou to cisla, ktera sam potvrdil.
+
+function pocetLidi(n) {
+  if (n === 1) return '1 člověk';
+  if (n >= 2 && n <= 4) return n + ' lidi';
+  return n + ' lidí';
+}
+
+function pocetLidemDativ(n) {
+  return n === 1 ? '1 člověku' : n + ' lidem';
+}
+
+function pocetPrihlasenych(n) {
+  if (n === 1) return '1 přihlášený';
+  if (n >= 2 && n <= 4) return n + ' přihlášení';
+  return n + ' přihlášených';
+}
+
+function prehledAkce(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return null;
+  const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const vychoziNoci = nociAkce(e);
+
+  const radky = [];
+  const noci = regs.reduce((sum, r) => sum + (r.nights ?? vychoziNoci), 0);
+  radky.push({ nazev: '🏠 Ubytování', jednotka: 'nocí', pocet: noci, cena: e.priceAccommodation || 0 });
+
+  const nociZvyh = regs.reduce((sum, r) => sum + (r.nightsReduced || 0), 0);
+  if ((e.priceAccommodationReduced || 0) > 0 || nociZvyh > 0) {
+    radky.push({ nazev: '🧒 Ubytování zvýhodněné', jednotka: 'nocí', pocet: nociZvyh, cena: e.priceAccommodationReduced || 0 });
+  }
+
+  polozkyAkce(e).forEach(polozka => {
+    radky.push({
+      nazev: polozka.name,
+      jednotka: 'ks',
+      pocet: regs.reduce((sum, r) => sum + pocetPolozky(r, polozka), 0),
+      cena: polozka.price
+    });
+  });
+
+  radky.forEach(r => { r.celkem = r.pocet * r.cena; });
+  const celkem = radky.reduce((sum, r) => sum + r.celkem, 0);
+
+  const sami = regs.filter(r => r.settledAt);
+  const samiKc = sami.reduce((sum, r) => sum + (r.settledAmount || 0), 0);
+  const zbyva = regs.filter(r => !r.settledAt);
+  const zbyvaKc = zbyva.reduce((sum, r) => sum + cenaPrihlasky(e, r), 0);
+
+  return { e, regs, radky, celkem, sami, samiKc, zbyva, zbyvaKc };
+}
+
+function openEventSummary(eventId) {
+  const d = prehledAkce(eventId);
+  if (!d) return;
+  const { e, regs, radky, celkem, sami, samiKc, zbyva, zbyvaKc } = d;
+  const rozdil = celkem - (samiKc + zbyvaKc);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">📊 Přehled vyúčtování</div>
+      <div class="modal-subtitle">${e.name} · ${formatEventDateFull(e.startDatetime)} – ${formatEventDateFull(e.endDatetime)}<br>${pocetPrihlasenych(regs.length)}</div>
+    </div>
+
+    ${regs.length === 0 ? '<div class="empty-msg" style="padding:16px;">Na akci nikdo není přihlášený, není co počítat.</div>' : `
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead>
+            <tr style="text-align:left;color:var(--ink-soft);font-size:11px;text-transform:uppercase;letter-spacing:0.04em;">
+              <th style="padding:6px 4px;">Položka</th>
+              <th style="padding:6px 4px;text-align:right;">Počet</th>
+              <th style="padding:6px 4px;text-align:right;">Cena</th>
+              <th style="padding:6px 4px;text-align:right;">Celkem</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${radky.map(r => `
+              <tr style="border-top:1px solid var(--line);${r.pocet === 0 ? 'color:var(--ink-soft);' : ''}">
+                <td style="padding:8px 4px;">${r.nazev}</td>
+                <td style="padding:8px 4px;text-align:right;white-space:nowrap;">${r.pocet} ${r.jednotka}</td>
+                <td style="padding:8px 4px;text-align:right;white-space:nowrap;">${r.cena} Kč</td>
+                <td style="padding:8px 4px;text-align:right;font-weight:700;white-space:nowrap;">${r.celkem} Kč</td>
+              </tr>`).join('')}
+          </tbody>
+          <tfoot>
+            <tr style="border-top:2px solid var(--ink);">
+              <td colspan="3" style="padding:10px 4px;font-weight:800;">CELKEM</td>
+              <td style="padding:10px 4px;text-align:right;font-weight:800;font-size:16px;white-space:nowrap;">${celkem} Kč</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin-top:14px;font-size:13px;">
+        <div style="display:flex;justify-content:space-between;gap:10px;">
+          <span>🧾 Vyúčtovali se sami</span>
+          <strong>${samiKc} Kč${sami.length ? ` · ${pocetLidi(sami.length)}` : ''}</strong>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:10px;margin-top:4px;">
+          <span>${e.status === 'settled' ? '✓ Zúčtoval admin' : '⏳ Zbývá zúčtovat'}</span>
+          <strong>${zbyvaKc} Kč${zbyva.length ? ` · ${pocetLidi(zbyva.length)}` : ''}</strong>
+        </div>
+        ${rozdil !== 0 ? `
+          <div style="margin-top:8px;font-size:12px;color:var(--warning);">
+            Pozor: součty se liší o ${rozdil} Kč. Někdo se vyúčtoval dřív, než se změnily ceny akce – platí, co už má odepsané z konta.
+          </div>` : ''}
+      </div>
+
+      ${zbyva.length ? `
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:10px;">
+          Nezúčtovaní: ${zbyva.map(r => (getMember(r.memberId) || {}).name || '?').join(', ')}
+        </div>` : ''}
+
+      <div class="form-actions" style="flex-direction:column;gap:8px;margin-top:14px;">
+        <button class="btn btn-secondary" style="width:100%;" onclick="kopirujPrehledAkce('${e.id}')">
+          📋 Kopírovat přehled jako text
+        </button>
+        <button class="btn btn-secondary" style="width:100%;" onclick="openEventDetail('${e.id}')">Zpět na akci</button>
+      </div>
+    `}
+  `);
+}
+
+function kopirujPrehledAkce(eventId) {
+  const d = prehledAkce(eventId);
+  if (!d) return;
+  const radky = d.radky.map(r => `${r.nazev}: ${r.pocet} ${r.jednotka} × ${r.cena} Kč = ${r.celkem} Kč`);
+  const text = [
+    `${d.e.name} – přehled vyúčtování`,
+    pocetPrihlasenych(d.regs.length),
+    '',
+    ...radky,
+    '',
+    `CELKEM: ${d.celkem} Kč`,
+    `Vyúčtovali se sami: ${d.samiKc} Kč (${pocetLidi(d.sami.length)})`,
+    `Zbývá zúčtovat: ${d.zbyvaKc} Kč (${pocetLidi(d.zbyva.length)})`
+  ].join('\n');
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast('✓ Přehled ve schránce'))
+      .catch(() => showToast('Kopírování nevyšlo'));
+  } else {
+    showToast('Kopírování v tomhle prohlížeči nejde');
+  }
 }
 
 function adminEditEventReg(eventId, memberId) {
@@ -1820,7 +3149,8 @@ function adminEditEventReg(eventId, memberId) {
   const m = getMember(memberId); if (!m) return;
   const defaultNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
   const nights = reg.nights ?? defaultNights;
-  const b1 = reg.beer1Count||0, b2 = reg.beer2Count||0;
+  const nightsRed = reg.nightsReduced || 0;
+  const maRedukovanou = (e.priceAccommodationReduced || 0) > 0;
 
   const html = `
     <div class="modal-handle"></div>
@@ -1838,8 +3168,18 @@ function adminEditEventReg(eventId, memberId) {
         <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-total">${nights*e.priceAccommodation}</span> Kč</span>
       </div>
     </div>
-    ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
-    ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
+    ${maRedukovanou ? `
+    <div class="form-group">
+      <label>🧒 Zvýhodněné noci – ${e.priceAccommodationReduced} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjNightsRed(-1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="nights-red-cnt" data-count="${nightsRed}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${nightsRed}</span>
+        <button onclick="adjNightsRed(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-red-total">${nightsRed*e.priceAccommodationReduced}</span> Kč</span>
+      </div>
+    </div>
+    ` : ''}
+    ${polozkyAkce(e).map(polozka => polozkaCounterHtml(polozka, pocetPolozky(reg, polozka), 'pol')).join('')}
     <div class="form-actions">
       <button class="btn btn-secondary" onclick="openEventDetail('${eventId}')">Zpět</button>
       <button class="btn btn-primary" onclick="adminSaveEventReg('${eventId}','${memberId}')">Uložit</button>
@@ -1851,9 +3191,11 @@ function adminEditEventReg(eventId, memberId) {
 async function adminSaveEventReg(eventId, memberId) {
   const reg = state.eventRegistrations.find(r => r.eventId===eventId && r.memberId===memberId);
   if (!reg) return;
-  reg.beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
-  reg.beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
+  const e = getEvent(eventId);
+  const pocty = cteniPolozek(e, 'pol');
+  SLOTY_POLOZEK.forEach((slot, idx) => { reg[slot.countKey] = pocty[idx]; });
   reg.nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
+  reg.nightsReduced = parseInt(document.getElementById('nights-red-cnt')?.dataset.count||'0');
   reg.updatedAt = new Date().toISOString();
   await saveEventRegistration_db(reg);
   closeModal();
@@ -1861,25 +3203,252 @@ async function adminSaveEventReg(eventId, memberId) {
   openEventDetail(eventId);
 }
 
+// Zuctovani akce. Po SQL kroku 14 nabidne jeste upravu cen a dopocita
+// rozdil tem, kdo se uz vyuctovali sami. Dokud krok 14 nebezel, chova se
+// to jako driv (zuctujAkciPoStaru nize).
 async function settleEvent(eventId) {
   const e = getEvent(eventId);
   if (!e || e.status === 'settled') return;
-  if (!confirm('Zúčtovat akci? Odečtou se náklady z kont přihlášených.')) return;
+
+  // Nahled nic nemeni - zaroven nam rekne, jestli uz funkce v databazi je.
+  const { error } = await db.rpc('settle_event', {
+    p_event_id: eventId,
+    p_price_acc: e.priceAccommodation || 0,
+    p_price_acc_reduced: e.priceAccommodationReduced || 0,
+    p_item_prices: SLOTY_POLOZEK.map(slot => e[slot.priceKey] || 0),
+    p_dry_run: true
+  });
+
+  if (error) {
+    const chybiFunkce = error.code === 'PGRST202'
+      || /settle_event/i.test(error.message || '')
+      || /does not exist/i.test(error.message || '');
+    if (chybiFunkce) {
+      state.settleReady = false;
+      console.warn('settle_event nedostupna (nebezel SQL krok 14?):', error.message);
+      return zuctujAkciPoStaru(eventId);
+    }
+    showDbError(error, 'Zúčtování se nepovedlo');
+    return;
+  }
+
+  state.settleReady = true;
+  openEventSettleDialog(eventId);
+}
+
+// Cenik z otevreneho formulare zuctovani.
+function cteniCenZuctovani(e) {
+  const cti = (id, vychozi) => {
+    const el = document.getElementById(id);
+    if (!el) return vychozi;
+    const v = parseInt(el.value);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  };
+  return {
+    acc: cti('zc-acc', e.priceAccommodation || 0),
+    accRed: cti('zc-acc-red', e.priceAccommodationReduced || 0),
+    polozky: SLOTY_POLOZEK.map(slot => cti(`zc-pol-${slot.i}`, e[slot.priceKey] || 0))
+  };
+}
+
+// Co zuctovani udela: komu se strhne a komu se opraví konto.
+function nahledZuctovani(e, ceny) {
+  const regs = state.eventRegistrations.filter(r => r.eventId === e.id);
+  const vychoziNoci = nociAkce(e);
+  const strzeni = [];
+  const opravy = [];
+
+  regs.forEach(r => {
+    const noci = r.nights ?? vychoziNoci;
+    const nova = noci * ceny.acc
+               + (r.nightsReduced || 0) * ceny.accRed
+               + SLOTY_POLOZEK.reduce((sum, slot, i) => sum + (r[slot.countKey] || 0) * (ceny.polozky[i] || 0), 0);
+
+    if (!r.settledAt) {
+      if (nova > 0) strzeni.push({ reg: r, castka: nova, zmena: -nova });
+    } else {
+      const rozdil = (r.settledAmount || 0) - nova;
+      if (rozdil !== 0) opravy.push({ reg: r, rozdil, nova, zmena: rozdil });
+    }
+  });
+
+  return {
+    strzeni, opravy,
+    sumStrzeni: strzeni.reduce((s, x) => s + x.castka, 0),
+    sumOprav: opravy.reduce((s, x) => s + x.rozdil, 0)
+  };
+}
+
+function openEventSettleDialog(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
   const regs = state.eventRegistrations.filter(r => r.eventId === eventId);
-  const defaultNights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
+  const maZvyhodnene = (e.priceAccommodationReduced || 0) > 0 || regs.some(r => (r.nightsReduced || 0) > 0);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="openEventDetail('${eventId}')">×</button>
+    <div class="modal-header">
+      <div class="modal-title">💰 Zúčtovat akci</div>
+      <div class="modal-subtitle">${e.name} · ${pocetPrihlasenych(regs.length)}</div>
+    </div>
+
+    <div class="section-title" style="margin:4px 0 2px;">Ceník</div>
+    <div style="font-size:12px;color:var(--ink-soft);margin-bottom:10px;">
+      Uprav, pokud to vyšlo jinak. Rozdíl se dorovná i těm, kdo se už vyúčtovali sami.
+    </div>
+
+    <div class="form-group">
+      <label>🏠 Ubytování (Kč/noc)</label>
+      <input type="number" id="zc-acc" min="0" max="100000" inputmode="numeric"
+        value="${e.priceAccommodation || 0}" oninput="prepocitejZuctovani('${eventId}')">
+    </div>
+
+    ${maZvyhodnene ? `
+      <div class="form-group">
+        <label>🧒 Ubytování zvýhodněné (Kč/noc)</label>
+        <input type="number" id="zc-acc-red" min="0" max="100000" inputmode="numeric"
+          value="${e.priceAccommodationReduced || 0}" oninput="prepocitejZuctovani('${eventId}')">
+      </div>` : ''}
+
+    ${polozkyAkce(e).map(polozka => `
+      <div class="form-group">
+        <label>${polozka.name} (Kč/ks)</label>
+        <input type="number" id="zc-pol-${polozka.i}" min="0" max="100000" inputmode="numeric"
+          value="${polozka.price}" oninput="prepocitejZuctovani('${eventId}')">
+      </div>`).join('')}
+
+    <div id="zc-nahled"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-secondary" onclick="openEventDetail('${eventId}')">Zrušit</button>
+      <button class="btn btn-primary" id="zc-submit" onclick="potvrditZuctovaniAkce('${eventId}')">Zúčtovat akci</button>
+    </div>
+  `);
+
+  prepocitejZuctovani(eventId);
+}
+
+function prepocitejZuctovani(eventId) {
+  const e = getEvent(eventId);
+  const el = document.getElementById('zc-nahled');
+  if (!e || !el) return;
+
+  const settings = getSettings();
+  const ceny = cteniCenZuctovani(e);
+  const n = nahledZuctovani(e, ceny);
+
+  const radek = (jmeno, castka, varovani) => `
+    <div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;">
+      <span>${jmeno}${varovani ? ' <span style="color:var(--accent);">⚠ dluh</span>' : ''}</span>
+      <strong class="${castka >= 0 ? 'positive' : 'negative'}">${formatKc(castka)}</strong>
+    </div>`;
+
+  const doDluhu = (memberId, zmena) =>
+    (recalcBalance(memberId) + zmena) < settings.debtLimit;
+
+  el.innerHTML = `
+    <div style="background:rgba(15,32,39,0.05);border-radius:10px;padding:12px 14px;margin:6px 0 2px;">
+      <div style="font-size:12px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">
+        Co to udělá
+      </div>
+
+      <div style="display:flex;justify-content:space-between;gap:8px;">
+        <span>${n.strzeni.length === 0 ? 'Nikomu se nestrhává' : `${pocetLidemDativ(n.strzeni.length)} se strhne z konta`}</span>
+        <strong class="negative">${n.sumStrzeni ? formatKc(-n.sumStrzeni) : '0 Kč'}</strong>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px;">
+        <span>${n.opravy.length === 0 ? 'Změna cen se nikoho netýká' : `${pocetLidemDativ(n.opravy.length)} se opraví konto`}</span>
+        <strong class="${n.sumOprav >= 0 ? 'positive' : 'negative'}">${formatKc(n.sumOprav)}</strong>
+      </div>
+
+      ${n.opravy.length ? `
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;">
+          ${n.opravy.map(o => radek(
+            (getMember(o.reg.memberId) || {}).name || '?',
+            o.rozdil,
+            doDluhu(o.reg.memberId, o.zmena))).join('')}
+        </div>` : ''}
+
+      ${n.strzeni.length ? `
+        <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line);font-size:12px;">
+          ${n.strzeni.map(x => radek(
+            (getMember(x.reg.memberId) || {}).name || '?',
+            -x.castka,
+            doDluhu(x.reg.memberId, x.zmena))).join('')}
+        </div>` : ''}
+    </div>
+  `;
+}
+
+async function potvrditZuctovaniAkce(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  const ceny = cteniCenZuctovani(e);
+  const n = nahledZuctovani(e, ceny);
+
+  const vzkaz = [
+    `Zúčtovat akci „${e.name}"?`,
+    '',
+    n.strzeni.length ? `${pocetLidemDativ(n.strzeni.length)} se strhne celkem ${n.sumStrzeni} Kč.` : 'Nikomu se nic nestrhává.',
+    n.opravy.length ? `${pocetLidemDativ(n.opravy.length)} z těch, co se vyúčtovali sami, se opraví konto o ${n.sumOprav} Kč.` : ''
+  ].filter(Boolean).join('\n');
+
+  if (!confirm(vzkaz)) return;
+
+  const btn = document.getElementById('zc-submit');
+  if (btn) { btn.disabled = true; btn.textContent = 'Zúčtovávám…'; }
+
+  const { data, error } = await db.rpc('settle_event', {
+    p_event_id: eventId,
+    p_price_acc: ceny.acc,
+    p_price_acc_reduced: ceny.accRed,
+    p_item_prices: ceny.polozky,
+    p_dry_run: false
+  });
+
+  if (error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Zúčtovat akci'; }
+    showDbError(error, 'Zúčtování se nepovedlo');
+    return;
+  }
+
+  await loadAllData();
+  closeModal();
+  const opraveno = data && data.adjusted_count ? ` · ${pocetLidi(data.adjusted_count)} dostalo opravu konta` : '';
+  showToast(`✓ Akce zúčtována${opraveno}`);
+  render();
+}
+
+async function zuctujAkciPoStaru(eventId) {
+  const e = getEvent(eventId);
+  if (!e || e.status === 'settled') return;
+  const vsechny = state.eventRegistrations.filter(r => r.eventId === eventId);
+  const regs = vsechny.filter(r => !r.settledAt);   // kdo se vyuctoval sam, uz zaplatil
+  const jizVyuctovano = vsechny.length - regs.length;
+
+  if (!confirm(
+    `Zúčtovat akci?\n\n` +
+    `${regs.length} lidem se odečtou náklady z konta.` +
+    (jizVyuctovano > 0 ? `\n${jizVyuctovano} se už vyúčtovalo sám/sama – těm se nic neodečte.` : '')
+  )) return;
+  const defaultNights = nociAkce(e);
   let count = 0;
   for (const reg of regs) {
     const nights = reg.nights ?? defaultNights;  // použij individuální počet nocí
+    const nightsRed = reg.nightsReduced || 0;
     const accCost = nights * e.priceAccommodation;
-    const beer1Cost = (reg.beer1Count||0) * e.beer1Price;
-    const beer2Cost = (reg.beer2Count||0) * e.beer2Price;
-    const total = accCost + beer1Cost + beer2Cost;
+    const accRedCost = nightsRed * (e.priceAccommodationReduced || 0);
+    const total = cenaPrihlasky(e, reg, nights);
     if (total === 0) { count++; continue; }
     const desc = [
       `Akce: ${e.name}`,
       accCost>0?`ubyt. ${nights} nocí × ${e.priceAccommodation} Kč = ${accCost} Kč`:'',
-      beer1Cost>0?`${reg.beer1Count}× ${e.beer1Name} ${beer1Cost} Kč`:'',
-      beer2Cost>0?`${reg.beer2Count}× ${e.beer2Name} ${beer2Cost} Kč`:''
+      accRedCost>0?`zvýhodněné ${nightsRed} nocí × ${e.priceAccommodationReduced} Kč = ${accRedCost} Kč`:'',
+      ...polozkyAkce(e)
+        .filter(polozka => pocetPolozky(reg, polozka) > 0)
+        .map(polozka => `${pocetPolozky(reg, polozka)}× ${polozka.name} ${pocetPolozky(reg, polozka) * polozka.price} Kč`)
     ].filter(Boolean).join(', ');
     await addTransaction({ memberId: reg.memberId, amount: -total, type: 'event_charge', description: desc, createdBy: state.currentUserId });
     count++;
@@ -1887,15 +3456,197 @@ async function settleEvent(eventId) {
   e.status = 'settled';
   await saveEvent(e);
   closeModal();
-  showToast(`✓ Akce zúčtována: ${count} členů`);
+  showToast(jizVyuctovano > 0
+    ? `✓ Zúčtováno ${count} členů (${jizVyuctovano} už vyúčtováno dřív)`
+    : `✓ Akce zúčtována: ${count} členů`);
   render();
 }
 
+// Zuctovanou akci uz clen nema proc videt - je hotova, nic s ni nenadela
+// a jen mu zabira misto. Kolik za ni zaplatil, zustava v historii konta.
+// Admin v sekci Akce vidi dal vsechno.
+function akceProClena() {
+  return [...state.events]
+    .filter(e => e.status !== 'settled')
+    .sort((a, b) => new Date(a.startDatetime) - new Date(b.startDatetime));
+}
+
 function renderMemberEvents() {
-  const now = new Date();
-  const allEvents = [...state.events].sort((a,b) => new Date(a.startDatetime)-new Date(b.startDatetime));
-  if (allEvents.length === 0) return `<div class="empty-msg"><div class="icon">🏕️</div><div>Zatím žádné akce</div></div>`;
-  return allEvents.map(e => renderEventCard(e)).join('');
+  const akce = akceProClena();
+  if (akce.length === 0) return `<div class="empty-msg"><div class="icon">🏕️</div><div>Zatím žádné akce</div></div>`;
+  return akce.map(e => renderEventCard(e)).join('');
+}
+
+// ============================================
+// VYUCTOVANI AKCE CLENEM
+// ============================================
+// Po skonceni akce si kazdy sam potvrdi, co doopravdy spotreboval.
+// Castku prepocita databaze z cen akce; tady jen ukazujeme nahled.
+
+// pocty = pole sesti cisel (polozka 1..6), stejne jako to ceka databaze
+function spocitejUtratu(e, noci, nociZvyh, pocty) {
+  const zaPolozky = SLOTY_POLOZEK.reduce((sum, slot, idx) =>
+    sum + (pocty[idx] || 0) * (e[slot.priceKey] || 0), 0);
+  return noci * (e.priceAccommodation || 0)
+       + nociZvyh * (e.priceAccommodationReduced || 0)
+       + zaPolozky;
+}
+
+function openEventSettlement(eventId) {
+  const e = getEvent(eventId); if (!e) return;
+  const myReg = getMyEventReg(eventId);
+  if (!myReg) { showToast('Nejsi na tuhle akci přihlášen/a'); return; }
+  if (myReg.settledAt) { showToast('Tuhle akci už máš vyúčtovanou'); return; }
+  if (!lzeSeVyuctovat(e)) {
+    showToast(`Vyúčtování se zavřelo ${popisTerminu(e)} – ozvi se adminovi`);
+    return;
+  }
+
+  const maZvyhodnenou = (e.priceAccommodationReduced || 0) > 0;
+  const n  = myReg.nights ?? nociAkce(e);
+  const nz = myReg.nightsReduced || 0;
+  const pocty = poctyZPrihlasky(myReg);
+
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">🧾 Vyúčtování akce</div>
+      <div class="modal-subtitle">${e.name} · ${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)}</div>
+    </div>
+
+    <div style="background:rgba(212,115,26,0.10);border:1.5px solid rgba(212,115,26,0.3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:13px;">
+      Projdi čísla a oprav je podle skutečnosti – kolik nocí jsi doopravdy přespal/a
+      a kolik toho vypil/a. Po potvrzení se částka <strong>odečte z tvého konta</strong>
+      a přihlášku už nepůjde měnit. Vyúčtuj se, až budeš mít jasno – klidně hned,
+      když odjíždíš dřív než ostatní. <strong>Otevřené do ${popisTerminu(e)}.</strong>
+    </div>
+
+    <div class="form-group">
+      <label>🌙 Počet nocí – ${e.priceAccommodation} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjSettle('set-nights', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="set-nights" data-count="${n}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${n}</span>
+        <button onclick="adjSettle('set-nights', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+      </div>
+    </div>
+
+    ${maZvyhodnenou ? `
+    <div class="form-group">
+      <label>🧒 Zvýhodněné noci – ${e.priceAccommodationReduced} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjSettle('set-nights-red', -1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="set-nights-red" data-count="${nz}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${nz}</span>
+        <button onclick="adjSettle('set-nights-red', 1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+      </div>
+    </div>` : ''}
+
+    ${polozkyAkce(e).map(polozka => polozkaCounterHtml(polozka, pocty[polozka.i - 1], 'set-pol')).join('')}
+
+    <div id="settle-summary" style="background:rgba(15,32,39,0.05);border-radius:10px;padding:14px;margin:14px 0;">
+      <div style="font-size:13px;color:var(--ink-soft);">Celkem k odečtení</div>
+      <div id="settle-total" style="font-size:26px;font-weight:800;">${spocitejUtratu(e, n, nz, pocty)} Kč</div>
+      <div id="settle-breakdown" style="font-size:12px;color:var(--ink-soft);margin-top:4px;"></div>
+    </div>
+
+    <div class="form-actions" style="flex-direction:column;gap:8px;">
+      <button class="btn btn-primary" style="width:100%;" id="settle-btn"
+        onclick="potvrditVyuctovani('${e.id}')">Potvrdit a odečíst z konta</button>
+      <button class="btn btn-secondary" style="width:100%;" onclick="closeModal()">Ještě ne, zavřít</button>
+    </div>
+  `);
+  prepocitejVyuctovani();
+}
+
+function adjSettle(id, delta) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let count = parseInt(el.dataset.count || '0') + delta;
+  if (count < 0) count = 0;
+  el.dataset.count = count;
+  el.textContent = count;
+  prepocitejVyuctovani();
+}
+
+function cteniVyuctovani() {
+  const dej = id => parseInt(document.getElementById(id)?.dataset.count || '0') || 0;
+  const e = getEventFromSettleForm();
+  return {
+    noci: dej('set-nights'),
+    nociZvyh: dej('set-nights-red'),
+    pocty: cteniPolozek(e, 'set-pol')
+  };
+}
+
+function prepocitejVyuctovani() {
+  const e = getEventFromSettleForm();
+  if (!e) return;
+  const v = cteniVyuctovani();
+  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pocty);
+
+  const totalEl = document.getElementById('settle-total');
+  if (totalEl) totalEl.textContent = celkem + ' Kč';
+
+  const rozpis = [
+    v.noci > 0 ? `${v.noci}× nocleh ${e.priceAccommodation} Kč` : '',
+    v.nociZvyh > 0 ? `${v.nociZvyh}× zvýhodněná noc ${e.priceAccommodationReduced} Kč` : '',
+    ...polozkyAkce(e)
+      .filter(polozka => v.pocty[polozka.i - 1] > 0)
+      .map(polozka => `${v.pocty[polozka.i - 1]}× ${polozka.name} ${polozka.price} Kč`)
+  ].filter(Boolean).join(' + ');
+  const rozpisEl = document.getElementById('settle-breakdown');
+  if (rozpisEl) rozpisEl.textContent = rozpis || 'Nic jsi nespotřeboval/a – odečte se nula.';
+
+  const btn = document.getElementById('settle-btn');
+  if (btn) btn.textContent = celkem > 0
+    ? `Potvrdit a odečíst ${celkem} Kč z konta`
+    : 'Potvrdit – nic neplatím';
+}
+
+function getEventFromSettleForm() {
+  const btn = document.querySelector('[onclick*="potvrditVyuctovani"]');
+  const id = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+  return id ? getEvent(id) : null;
+}
+
+async function potvrditVyuctovani(eventId) {
+  const v = cteniVyuctovani();
+  const e = getEvent(eventId);
+  const celkem = spocitejUtratu(e, v.noci, v.nociZvyh, v.pocty);
+
+  if (!confirm(celkem > 0
+      ? `Opravdu potvrdit? Z konta se ti odečte ${celkem} Kč a změnit to půjde už jen přes admina.`
+      : 'Opravdu potvrdit, že nic neplatíš?')) return;
+
+  const btn = document.getElementById('settle-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Potvrzuji…'; }
+
+  // Po SQL kroku 12 posilame vsech sest poctu v poli; bez nej stara podoba.
+  const { data, error } = state.itemsReady
+    ? await db.rpc('settle_my_event_registration', {
+        p_event_id: eventId,
+        p_nights: v.noci,
+        p_nights_reduced: v.nociZvyh,
+        p_counts: v.pocty
+      })
+    : await db.rpc('settle_my_event_registration', {
+        p_event_id: eventId,
+        p_nights: v.noci,
+        p_nights_reduced: v.nociZvyh,
+        p_beer1: v.pocty[0],
+        p_beer2: v.pocty[1]
+      });
+
+  if (error) {
+    if (btn) { btn.disabled = false; prepocitejVyuctovani(); }
+    showDbError(error, 'Vyúčtování se nepovedlo');
+    return;
+  }
+
+  await loadAllData();
+  closeModal();
+  showToast(data > 0 ? `✓ Vyúčtováno, odečteno ${data} Kč` : '✓ Vyúčtováno, neplatíš nic');
+  render();
 }
 
 function renderEventCard(e) {
@@ -1913,16 +3664,38 @@ function renderEventCard(e) {
         </div>
         ${e.status==='settled'?'<span class="status-badge settled">Zúčtováno</span>':''}
       </div>
-      <div style="display:grid;grid-template-columns:repeat(${[1, e.beer1Name?1:0, e.beer2Name?1:0].filter(Boolean).length},1fr);gap:6px;margin-bottom:12px;font-size:13px;">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:12px;font-size:13px;">
         <div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🏠 Ubytování<br><strong>${e.priceAccommodation} Kč/noc</strong><br><span style="color:var(--ink-soft)">${nights} nocí = ${nights*e.priceAccommodation} Kč</span></div>
-        ${e.beer1Name?`<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🍺 ${e.beer1Name}<br><strong>${e.beer1Price} Kč/ks</strong></div>`:''}
-        ${e.beer2Name?`<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🍺 ${e.beer2Name}<br><strong>${e.beer2Price} Kč/ks</strong></div>`:''}
+        ${polozkyAkce(e).map(polozka =>
+          `<div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">${polozka.name}<br><strong>${polozka.price} Kč/ks</strong></div>`).join('')}
       </div>
       ${myReg?`
         <div style="background:rgba(26,95,90,0.08);border:1.5px solid rgba(26,95,90,0.25);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
           <div style="font-weight:700;color:var(--primary);margin-bottom:4px;">✓ Přihlášen/a</div>
-          <div style="font-size:13px;color:var(--ink-soft);">${[e.beer1Name&&myReg.beer1Count>0?`${myReg.beer1Count}× ${e.beer1Name}`:'', e.beer2Name&&myReg.beer2Count>0?`${myReg.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(' · ')}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
-          ${!isPast?`<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>`:''}
+          <div style="font-size:13px;color:var(--ink-soft);">${popisSpotreby(e, myReg)}${myReg.arrivalDatetime?`<br>🕐 Příjezd: ${formatEventDate(myReg.arrivalDatetime)} ${new Date(myReg.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}`:''}</div>
+          ${myReg.settledAt ? `
+            <div style="margin-top:8px;font-size:13px;font-weight:600;color:var(--primary);">
+              🧾 Vyúčtováno · odečteno ${myReg.settledAmount || 0} Kč
+            </div>
+          ` : e.status === 'settled' ? `
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-soft);">
+              Akci zúčtoval admin.
+            </div>
+          ` : !lzeSeVyuctovat(e) ? `
+            <div style="margin-top:8px;font-size:13px;color:var(--ink-soft);">
+              ⏰ Vyúčtování se zavřelo ${popisTerminu(e)}. Zbytek dorovná admin – kdyžtak se mu ozvi.
+            </div>
+          ` : `
+            ${!isPast ? `<button class="btn-choice" style="width:100%;margin-top:8px;" onclick="openEventRegistration('${e.id}')">✎ Upravit přihlášku</button>` : ''}
+            <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="openEventSettlement('${e.id}')">
+              🧾 Vyúčtovat se – kolik jsem opravdu utratil/a
+            </button>
+            <div style="font-size:11px;color:var(--ink-soft);margin-top:6px;text-align:center;">
+              ${isPast
+                ? `Akce skončila. Vyúčtuj se do <strong>${popisTerminu(e)}</strong>, pak už to převezme admin.`
+                : `Odjíždíš dřív nebo už víš, kolik jsi utratil/a? Potvrď to rovnou. Čas máš do ${popisTerminu(e)}.`}
+            </div>
+          `}
         </div>
       `:!isPast?`<button class="btn btn-primary" style="width:100%;margin-bottom:8px;" onclick="openEventRegistration('${e.id}')">✓ Přihlásit se na akci</button>`:''}
       <div style="display:flex;gap:8px;margin-bottom:8px;">
@@ -1934,13 +3707,25 @@ function renderEventCard(e) {
   `;
 }
 
+// ISO datum -> hodnota pro <input type="datetime-local"> v mistnim case.
+// (Pouhy .slice(0,16) na ISO retezci ukazuje cas v UTC, tj. v lete o 2 hodiny mene.)
+function toLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function openEventRegistration(eventId) {
   const e = getEvent(eventId); if (!e) return;
   const myReg = getMyEventReg(eventId);
   const maxNights = Math.ceil((new Date(e.endDatetime)-new Date(e.startDatetime))/(1000*60*60*24));
-  const b1 = myReg?myReg.beer1Count:0, b2 = myReg?myReg.beer2Count:0;
-  const arrVal = myReg&&myReg.arrivalDatetime?myReg.arrivalDatetime.slice(0,16):'';
+  // Kdyz clovek jeste prijezd nezadal, nabidneme zacatek akce (ne dnesek).
+  const arrVal = myReg && myReg.arrivalDatetime ? toLocalInput(myReg.arrivalDatetime) : toLocalInput(e.startDatetime);
   const defaultNights = myReg?.nights ?? maxNights;
+  const defaultNightsRed = myReg?.nightsReduced ?? 0;
+  const maRedukovanou = (e.priceAccommodationReduced || 0) > 0;
 
   const html = `
     <div class="modal-handle"></div>
@@ -1964,11 +3749,23 @@ function openEventRegistration(eventId) {
         <button onclick="adjNights(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
         <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-total">${defaultNights*e.priceAccommodation}</span> Kč z konta</span>
       </div>
-      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Výchozí: ${maxNights} nocí (délka akce). Uprav pokud přijedeš/odjedeš dříve nebo bereš děti.</div>
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Výchozí: ${maxNights} nocí (délka akce). Uprav, pokud přijedeš nebo odjedeš dřív.</div>
     </div>
 
-    ${e.beer1Name?`<div class="form-group"><label>🍺 ${e.beer1Name} – ${e.beer1Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b1c',-1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b1c" data-count="${b1}" data-price="${e.beer1Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b1}</span><button onclick="adjBeer('b1c',+1,${e.beer1Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b1t">${b1*e.beer1Price}</span> Kč</span></div></div>`:''}
-    ${e.beer2Name?`<div class="form-group"><label>🍺 ${e.beer2Name} – ${e.beer2Price} Kč/ks</label><div style="display:flex;align-items:center;gap:12px;margin-top:6px;"><button onclick="adjBeer('b2c',-1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button><span id="b2c" data-count="${b2}" data-price="${e.beer2Price}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${b2}</span><button onclick="adjBeer('b2c',+1,${e.beer2Price})" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button><span style="color:var(--ink-soft);font-size:13px;">= <span id="b2t">${b2*e.beer2Price}</span> Kč</span></div></div>`:''}
+    ${maRedukovanou ? `
+    <div class="form-group">
+      <label>🧒 Zvýhodněné noci – ${e.priceAccommodationReduced} Kč/noc</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjNightsRed(-1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">−</button>
+        <span id="nights-red-cnt" data-count="${defaultNightsRed}" style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${defaultNightsRed}</span>
+        <button onclick="adjNightsRed(+1)" style="width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="acc-red-total">${defaultNightsRed*e.priceAccommodationReduced}</span> Kč z konta</span>
+      </div>
+      <div style="font-size:11px;color:var(--ink-soft);margin-top:4px;">Za děti nebo za noc ve vlastním stanu. Počítá se po nocích: dvě děti na dvě noci = 4.</div>
+    </div>
+    ` : ''}
+
+    ${polozkyAkce(e).map(polozka => polozkaCounterHtml(polozka, pocetPolozky(myReg, polozka), 'pol')).join('')}
 
     <div class="form-actions">
       ${myReg?`<button class="btn btn-danger" onclick="cancelEventRegistration('${eventId}')">Odhlásit se</button>`:''}
@@ -1977,6 +3774,27 @@ function openEventRegistration(eventId) {
     </div>
   `;
   openModal(html);
+}
+
+function adjNightsRed(delta) {
+  const el = document.getElementById('nights-red-cnt');
+  if (!el) return;
+  let count = parseInt(el.dataset.count || '0') + delta;
+  if (count < 0) count = 0;
+  el.dataset.count = count;
+  el.textContent = count;
+
+  const totalEl = document.getElementById('acc-red-total');
+  const ev = getEventFromRegForm();
+  if (totalEl && ev) totalEl.textContent = count * (ev.priceAccommodationReduced || 0);
+}
+
+// Akci k prave otevrene prihlasce poznáme z tlacitka Ulozit
+// (vlastni prihlaska i adminska uprava ciziho zaznamu).
+function getEventFromRegForm() {
+  const btn = document.querySelector('[onclick*="doSaveEventReg"], [onclick*="adminSaveEventReg"]');
+  const eventId = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+  return eventId ? getEvent(eventId) : null;
 }
 
 function adjNights(delta) {
@@ -1988,15 +3806,8 @@ function adjNights(delta) {
   el.textContent = count;
   // Update accommodation total
   const totalEl = document.getElementById('acc-total');
-  if (totalEl) {
-    // Find price from state - get eventId from save button
-    const btn = document.querySelector('[onclick*="doSaveEventReg"]');
-    const eventId = btn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
-    if (eventId) {
-      const ev = getEvent(eventId);
-      if (ev) totalEl.textContent = count * ev.priceAccommodation;
-    }
-  }
+  const ev = getEventFromRegForm();
+  if (totalEl && ev) totalEl.textContent = count * ev.priceAccommodation;
 }
 
 function autoCalcNights(endDatetimeISO) {
@@ -2014,40 +3825,218 @@ function autoCalcNights(endDatetimeISO) {
   adjNights(0);
 }
 
-function adjBeer(elId, delta, price) {
-  const el = document.getElementById(elId);
-  let count = parseInt(el.dataset.count||'0') + delta;
+// ============================================
+// POLOZKY AKCE (pivo, limonada, vino, snidane...)
+// ============================================
+// Akce muze mit az 6 polozek. Slot 1 a 2 jsou historicka pole beer1/beer2,
+// slot 3-6 pribyl v SQL kroku 12. Co admin nevyplni, se nikde nezobrazi.
+const SLOTY_POLOZEK = [
+  { i: 1, nameKey: 'beer1Name', priceKey: 'beer1Price', countKey: 'beer1Count' },
+  { i: 2, nameKey: 'beer2Name', priceKey: 'beer2Price', countKey: 'beer2Count' },
+  { i: 3, nameKey: 'item3Name', priceKey: 'item3Price', countKey: 'item3Count' },
+  { i: 4, nameKey: 'item4Name', priceKey: 'item4Price', countKey: 'item4Count' },
+  { i: 5, nameKey: 'item5Name', priceKey: 'item5Price', countKey: 'item5Count' },
+  { i: 6, nameKey: 'item6Name', priceKey: 'item6Price', countKey: 'item6Count' }
+];
+
+const POCET_SLOTU_POLOZEK = () => state.itemsReady ? 6 : 2;
+
+// Jen napovedy v prazdnem formulari, nic se z nich neuklada.
+const PREDLOHY_POLOZEK = [
+  { nazev: 'Kozel 10°',   cena: 45 },
+  { nazev: 'Bernard 12°', cena: 55 },
+  { nazev: 'Limonáda',    cena: 25 },
+  { nazev: 'Víno 0,2 l',  cena: 60 },
+  { nazev: 'Snídaně', cena: 90 },
+  { nazev: 'Kofola',       cena: 30 }
+];
+
+function polozkyAkce(e) {
+  if (!e) return [];
+  return SLOTY_POLOZEK
+    .filter(s => s.i <= POCET_SLOTU_POLOZEK())
+    .map(s => ({
+      i: s.i,
+      name: (e[s.nameKey] || '').trim(),
+      price: e[s.priceKey] || 0,
+      countKey: s.countKey
+    }))
+    .filter(x => x.name !== '');
+}
+
+function pocetPolozky(reg, p) {
+  return (reg && reg[p.countKey]) || 0;
+}
+
+// Pocty vsech sesti slotu v poradi 1..6 - presne to, co ceka databaze.
+function poctyZPrihlasky(reg) {
+  return SLOTY_POLOZEK.map(s => (reg && reg[s.countKey]) || 0);
+}
+
+// ============================================
+// LHUTA NA VLASTNI VYUCTOVANI
+// ============================================
+// Clen se muze sam vyuctovat jeste 5 dni po konci akce. Pak uz to dorovna
+// admin. U konkretni akce muze admin lhutu posunout (i zpetne).
+const DNI_NA_VYUCTOVANI = 5;
+
+function terminVyuctovani(e) {
+  if (e && e.settlementDeadline) return new Date(e.settlementDeadline);
+  const d = new Date(e.endDatetime);
+  d.setDate(d.getDate() + DNI_NA_VYUCTOVANI);
+  return d;
+}
+
+function lzeSeVyuctovat(e) {
+  if (!e || e.status === 'settled') return false;
+  return new Date() <= terminVyuctovani(e);
+}
+
+function popisTerminu(e) {
+  const d = terminVyuctovani(e);
+  return d.toLocaleDateString('cs-CZ', { weekday: 'short', day: 'numeric', month: 'numeric' })
+       + ' ' + d.toLocaleTimeString('cs-CZ', { hour: '2-digit', minute: '2-digit' });
+}
+
+async function zjistiLhutu() {
+  const { error } = await db.from('events').select('settlement_deadline').limit(1);
+  state.deadlineReady = !error;
+  if (error) console.warn('lhuta na vyuctovani nedostupna (nebezel SQL krok 13?):', error.message);
+}
+
+// Admin otevre vyuctovani znovu - treba u akce, ktera uz davno skoncila.
+async function prodluzLhutu(eventId, dni) {
+  const { data, error } = await db.rpc('set_event_settlement_deadline', {
+    p_event_id: eventId, p_dni: dni || DNI_NA_VYUCTOVANI
+  });
+  if (error) { showDbError(error, 'Lhutu se nepodarilo posunout'); return; }
+  const e = getEvent(eventId);
+  if (e && data) e.settlementDeadline = data;
+  showToast(`✓ Vyúčtování otevřeno do ${e ? popisTerminu(e) : ''}`);
+  openEventDetail(eventId);
+}
+
+async function zjistiPolozky() {
+  const { error } = await db.from('events').select('item3_name').limit(1);
+  state.itemsReady = !error;
+  if (error) console.warn('polozky 3-6 nedostupne (nebezel SQL krok 12?):', error.message);
+}
+
+// Jedno pocitadlo polozky. prefix oddeluje formulare: 'pol' u prihlasky,
+// 'set-pol' u vyuctovani clenem.
+function polozkaCounterHtml(p, pocet, prefix) {
+  const id = `${prefix}-${p.i}`;
+  const kolecko = 'width:36px;height:36px;border-radius:50%;border:1.5px solid var(--line);background:white;font-size:20px;cursor:pointer;';
+  return `
+    <div class="form-group">
+      <label>${p.name} – ${p.price} Kč/ks</label>
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+        <button onclick="adjPolozka('${id}', -1, ${p.price})" style="${kolecko}">−</button>
+        <span id="${id}" data-count="${pocet}" data-price="${p.price}"
+          style="font-size:20px;font-weight:700;min-width:32px;text-align:center;">${pocet}</span>
+        <button onclick="adjPolozka('${id}', 1, ${p.price})" style="${kolecko}">+</button>
+        <span style="color:var(--ink-soft);font-size:13px;">= <span id="${id}-t">${pocet * p.price}</span> Kč</span>
+      </div>
+    </div>`;
+}
+
+function adjPolozka(id, delta, price) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  let count = parseInt(el.dataset.count || '0') + delta;
   if (count < 0) count = 0;
   el.dataset.count = count;
   el.textContent = count;
-  const totalEl = document.getElementById(elId==='b1c'?'b1t':'b2t');
-  if (totalEl) totalEl.textContent = count * price;
+  const t = document.getElementById(id + '-t');
+  if (t) t.textContent = count * price;
+  if (id.startsWith('set-pol')) prepocitejVyuctovani();
+}
+
+// Vycte pocty z otevreneho formulare. Vraci vzdy sest cisel.
+function cteniPolozek(e, prefix) {
+  const out = [0, 0, 0, 0, 0, 0];
+  polozkyAkce(e).forEach(p => {
+    const el = document.getElementById(`${prefix}-${p.i}`);
+    out[p.i - 1] = parseInt(el?.dataset.count || '0') || 0;
+  });
+  return out;
+}
+
+// Souhrn "2x Pivo, 1x Limo" pro jeden radek v seznamu.
+function popisSpotreby(e, reg) {
+  return polozkyAkce(e)
+    .filter(p => pocetPolozky(reg, p) > 0)
+    .map(p => `${pocetPolozky(reg, p)}× ${p.name}`)
+    .join(', ');
+}
+
+// Kolik stoji jedna prihlaska podle ulozenych cen akce.
+function cenaPrihlasky(e, reg, noci) {
+  const n = noci != null ? noci : (reg.nights ?? nociAkce(e));
+  const nz = reg.nightsReduced || 0;
+  return n * (e.priceAccommodation || 0)
+       + nz * (e.priceAccommodationReduced || 0)
+       + polozkyAkce(e).reduce((sum, p) => sum + pocetPolozky(reg, p) * p.price, 0);
+}
+
+// "2 noci + 1 zvyhodnena", "3 zvyhodnene noci", "bez noclehu"
+function popisNoci(noci, zvyhodnene) {
+  const n = noci || 0;
+  const z = zvyhodnene || 0;
+  if (n === 0 && z === 0) return 'bez noclehu';
+  const casti = [];
+  if (n > 0) casti.push(`${n} nocí`);
+  if (z > 0) casti.push(`${z} zvýhodněných nocí`);
+  return casti.join(' + ');
+}
+
+function nociAkce(e) {
+  return Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000 * 60 * 60 * 24));
 }
 
 async function doSaveEventReg(eventId) {
   const e = getEvent(eventId); if (!e) return;
-  const beer1Count = parseInt(document.getElementById('b1c')?.dataset.count||'0');
-  const beer2Count = parseInt(document.getElementById('b2c')?.dataset.count||'0');
+  const pocty = cteniPolozek(e, 'pol');
   const nights = parseInt(document.getElementById('nights-cnt')?.dataset.count||'0');
+  const nightsReduced = parseInt(document.getElementById('nights-red-cnt')?.dataset.count||'0');
   const arrivalVal = document.getElementById('ev-arrival').value;
   const now = new Date().toISOString();
 
   let myReg = getMyEventReg(eventId);
+  const bylaNova = !myReg;
+  const puvodni = myReg ? { ...myReg } : null;
+
   if (myReg) {
-    myReg.beer1Count = beer1Count; myReg.beer2Count = beer2Count;
+    SLOTY_POLOZEK.forEach((slot, idx) => { myReg[slot.countKey] = pocty[idx]; });
     myReg.nights = nights;
+    myReg.nightsReduced = nightsReduced;
     myReg.arrivalDatetime = arrivalVal ? new Date(arrivalVal).toISOString() : null;
     myReg.updatedAt = now;
   } else {
     myReg = {
       id: genId(), eventId, memberId: state.currentUserId,
-      beer1Count, beer2Count, nights,
+      nights, nightsReduced,
+      ...Object.fromEntries(SLOTY_POLOZEK.map((slot, idx) => [slot.countKey, pocty[idx]])),
       arrivalDatetime: arrivalVal ? new Date(arrivalVal).toISOString() : null,
       updatedAt: now, createdAt: now
     };
     state.eventRegistrations.push(myReg);
   }
-  await saveEventRegistration_db(myReg);
+
+  const btn = document.querySelector('[onclick*="doSaveEventReg"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Ukládám…'; }
+
+  const ulozeno = await saveEventRegistration_db(myReg);
+
+  if (!ulozeno) {
+    // Uklid: at aplikace neukazuje prihlasku, ktera v databazi neni.
+    if (bylaNova) state.eventRegistrations = state.eventRegistrations.filter(r => r.id !== myReg.id);
+    else Object.assign(myReg, puvodni);
+    if (btn) { btn.disabled = false; btn.textContent = bylaNova ? 'Přihlásit se' : 'Uložit'; }
+    render();
+    return;   // modal zustava otevreny, at to clovek muze zkusit znovu
+  }
+
   closeModal();
   showToast('✓ Přihláška uložena');
   render();
@@ -2057,11 +4046,17 @@ async function saveEventRegistration_db(reg) {
   const { error } = await db.from('event_registrations').upsert({
     id: reg.id, event_id: reg.eventId, member_id: reg.memberId,
     beer1_count: reg.beer1Count||0, beer2_count: reg.beer2Count||0,
-    nights: reg.nights || null,
+    ...(state.itemsReady ? {
+      item3_count: reg.item3Count || 0, item4_count: reg.item4Count || 0,
+      item5_count: reg.item5Count || 0, item6_count: reg.item6Count || 0
+    } : {}),
+    nights: reg.nights ?? null,   // nula je platna, viz nacitani
+    nights_reduced: reg.nightsReduced || 0,
     arrival_datetime: reg.arrivalDatetime||null,
     updated_at: new Date().toISOString()
   });
-  if (error) { console.error('saveEventReg:', error); showToast('Chyba ukládání přihlášky'); }
+  if (error) { console.error('saveEventReg:', error); showDbError(error, 'Přihlášku se nepodařilo uložit'); return false; }
+  return true;
 }
 
 async function cancelEventRegistration(eventId) {
@@ -2081,9 +4076,10 @@ function showEventAttendees(eventId) {
     <div class="modal-header"><div class="modal-title">👥 Přihlášení</div><div class="modal-subtitle">${e.name}</div></div>
     ${regs.length===0?'<div class="empty-msg">Nikdo nepřihlášen</div>':`<ul style="list-style:none;">${regs.map(r => {
       const m = getMember(r.memberId); if (!m) return '';
-      const beers = [r.beer1Count>0?`${r.beer1Count}× ${e.beer1Name}`:'', r.beer2Count>0?`${r.beer2Count}× ${e.beer2Name}`:''].filter(Boolean).join(', ');
+      const beers = popisSpotreby(e, r);
       const arr = r.arrivalDatetime?`🕐 ${formatEventDate(r.arrivalDatetime)} ${new Date(r.arrivalDatetime).toLocaleTimeString('cs-CZ',{hour:'2-digit',minute:'2-digit'})}` : '';
-      return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,arr].filter(Boolean).join(' · ')}</div></div></li>`;
+      const nocRed = (r.nightsReduced||0) > 0 ? `🧒 ${r.nightsReduced}× zvýhodněná noc` : '';
+      return `<li class="attendee"><div class="member-avatar">${getInitials(m.name)}</div><div><div class="attendee-name">${m.name}</div><div style="font-size:12px;color:var(--ink-soft);">${[beers,nocRed,arr].filter(Boolean).join(' · ')}</div></div></li>`;
     }).join('')}</ul>`}
   `;
   openModal(html);
@@ -2104,7 +4100,7 @@ function openRideOffer(eventId) {
       </select>
     </div>
     <div class="form-group"><label>Počet volných míst (bez řidiče)</label><input type="number" id="ride-seats" min="1" max="8" value="${myRide?.seats||3}"></div>
-    <div class="form-group"><label>Datum a čas odjezdu</label><input type="datetime-local" id="ride-dt" value="${myRide?.departureDatetime?.slice(0,16)||e.startDatetime.slice(0,16)}"></div>
+    <div class="form-group"><label>Datum a čas odjezdu</label><input type="datetime-local" id="ride-dt" value="${toLocalInput(myRide?.departureDatetime || e.startDatetime)}"></div>
     <div class="form-group"><label>Místo odjezdu</label><input type="text" id="ride-place" placeholder="Náměstí Míru, Praha" value="${myRide?.departurePlace||''}"></div>
     <div class="form-group"><label>Cena (jen informace, platí se mimo aplikaci)</label><input type="text" id="ride-price" placeholder="3 Kč/km nebo 200 Kč za jízdu" value="${myRide?.priceInfo||''}"></div>
     <div class="form-group"><label>Poznámka</label><input type="text" id="ride-note" placeholder="Vezmu snowboardy..." value="${myRide?.note||''}"></div>
@@ -2125,13 +4121,24 @@ async function doSaveRide(eventId) {
   const price = document.getElementById('ride-price').value.trim();
   const note = document.getElementById('ride-note').value.trim();
   let myRide = state.eventRides.find(r => r.eventId===eventId && r.driverId===state.currentUserId);
+  const bylaNova = !myRide;
+  const puvodni = myRide ? { ...myRide } : null;
   if (myRide) {
     Object.assign(myRide, { direction, seats, departureDatetime: dt?new Date(dt).toISOString():null, departurePlace: place, priceInfo: price, note });
   } else {
+    // (novou nabidku zakladame nize)
     myRide = { id: genId(), eventId, driverId: state.currentUserId, direction, seats, departureDatetime: dt?new Date(dt).toISOString():null, departurePlace: place, priceInfo: price, note, reservations: [], createdAt: new Date().toISOString() };
     state.eventRides.push(myRide);
   }
-  await saveEventRide(myRide);
+
+  const ulozeno = await saveEventRide(myRide);
+  if (!ulozeno) {
+    if (bylaNova) state.eventRides = state.eventRides.filter(r => r.id !== myRide.id);
+    else Object.assign(myRide, puvodni);
+    render();
+    return;   // modal zustava otevreny
+  }
+
   closeModal(); showToast('✓ Nabídka odvozu uložena'); render();
 }
 
@@ -2199,20 +4206,25 @@ function renderCarSeats(ride, userId) {
 async function reserveRide(rideId, eventId) {
   const ride = state.eventRides.find(r => r.id===rideId); if (!ride) return;
   if ((ride.reservations||[]).length >= ride.seats) { showToast('Auto je plné'); return; }
-  if (!ride.reservations) ride.reservations=[];
-  ride.reservations.push({memberId: state.currentUserId});
-  await saveEventRide(ride);
+
+  const { error } = await db.rpc('ride_reserve', { p_ride_id: rideId, p_reserve: true });
+  if (error) { showDbError(error, 'Rezervace se nepovedla'); return; }
+
+  await reloadRide(rideId);
   closeModal(); showToast('✓ Místo rezervováno'); showEventRides(eventId);
 }
 
 async function cancelRideRes(rideId, eventId) {
   const ride = state.eventRides.find(r => r.id===rideId); if (!ride) return;
-  ride.reservations = (ride.reservations||[]).filter(r => r.memberId!==state.currentUserId);
-  await saveEventRide(ride);
+  const { error } = await db.rpc('ride_reserve', { p_ride_id: rideId, p_reserve: false });
+  if (error) { showDbError(error, 'Zrušení se nepovedlo'); return; }
+
+  await reloadRide(rideId);
   closeModal(); showToast('Rezervace zrušena'); showEventRides(eventId);
 }
 
 function getNextMonday() {
+  const now = new Date();
   const day = now.getDay(); // 0=Sun, 1=Mon...
   const daysUntilMonday = day === 1 ? 7 : (8 - day) % 7;
   const next = new Date(now);
@@ -2221,8 +4233,58 @@ function getNextMonday() {
   return next;
 }
 
-async function generateSaunaTraining() {
+// --- Zrusene sauny -------------------------------------------------------
+// Kdyz admin saunu smaze, nesmi ji automatika na stejny termin vytvorit znovu.
+// Drzime to na dvou mistech: v DB (status 'cancelled') i lokalne v prohlizeci,
+// aby to fungovalo i kdyby zapis do DB neprosel.
+const SAUNA_SKIP_KEY = 'naturclimb_saunaSkip';
+
+function dayKey(d) {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${x.getMonth() + 1}-${x.getDate()}`;
+}
+
+function getSaunaSkipDates() {
+  try { return JSON.parse(localStorage.getItem(SAUNA_SKIP_KEY) || '[]'); } catch (e) { return []; }
+}
+
+function saveSaunaSkipDates(list) {
+  try { localStorage.setItem(SAUNA_SKIP_KEY, JSON.stringify(list.slice(-20))); } catch (e) {}
+}
+
+function addSaunaSkipDate(d) {
+  const list = getSaunaSkipDates();
+  const k = dayKey(d);
+  if (!list.includes(k)) list.push(k);
+  saveSaunaSkipDates(list);
+}
+
+function removeSaunaSkipDate(d) {
+  const k = dayKey(d);
+  saveSaunaSkipDates(getSaunaSkipDates().filter(x => x !== k));
+}
+
+function isSaunaCancelled(date) {
+  const k = dayKey(date);
+  if (getSaunaSkipDates().includes(k)) return true;
+  return (state.cancelledTrainings || []).some(t =>
+    t.venue && t.venue.toLowerCase().includes('sauna') && dayKey(t.datetime) === k);
+}
+
+// Rucni vytvoreni sauny prebije predchozi zruseni - uklidime stare zaznamy.
+async function clearCancelledSauna(date) {
+  const k = dayKey(date);
+  removeSaunaSkipDate(date);
+  const hits = (state.cancelledTrainings || []).filter(t =>
+    t.venue && t.venue.toLowerCase().includes('sauna') && dayKey(t.datetime) === k);
+  for (const t of hits) await deleteTrainingFromDb(t.id);
+  state.cancelledTrainings = (state.cancelledTrainings || []).filter(t => !hits.includes(t));
+}
+
+async function generateSaunaTraining(manual = true) {
   const nextMonday = getNextMonday();
+
+  if (manual) await clearCancelledSauna(nextMonday);
 
   // Dvojitá kontrola
   const exists = state.trainings.some(t => {
@@ -2263,6 +4325,10 @@ async function autoGenerateSauna() {
   if (!user || (!user.isAdmin && !user.isSaunaAdmin)) return;
 
   const nextMonday = getNextMonday();
+
+  // Admin saunu na tento termin zrusil - nevracime ji zpet.
+  if (isSaunaCancelled(nextMonday)) return;
+
   const exists = state.trainings.some(t => {
     const d = new Date(t.datetime);
     return t.venue && t.venue.toLowerCase().includes('sauna') &&
@@ -2273,8 +4339,42 @@ async function autoGenerateSauna() {
 
   if (!exists) {
     console.log('🧖 Auto-generuji pondělní saunu...');
-    await generateSaunaTraining();
+    await generateSaunaTraining(false);
   }
+}
+
+// Po zapisu pres chranenou funkci si nactem cerstvy stav z databaze,
+// at v aplikaci sedi i to, co mezitim udelal nekdo jiny.
+async function reloadTraining(trainingId) {
+  const { data, error } = await db.from('trainings').select('*').eq('id', trainingId).maybeSingle();
+  if (error || !data) return;
+  const t = getTraining(trainingId);
+  if (!t) return;
+  t.registrations = data.registrations || [];
+  t.declined = data.declined || [];
+  t.lookingForPartner = data.looking_for_partner || [];
+  t.arrivalTimes = data.arrival_times || {};
+  t.attendedIds = data.attended_ids || [];
+  t.status = data.status;
+}
+
+async function reloadRide(rideId) {
+  const { data, error } = await db.from('event_rides').select('*').eq('id', rideId).maybeSingle();
+  if (error || !data) return;
+  const r = state.eventRides.find(x => x.id === rideId);
+  if (!r) return;
+  r.reservations = data.reservations || [];
+  r.seats = data.seats || 1;
+}
+
+// Hlaska z databaze je srozumitelnejsi nez "row-level security violation".
+function showDbError(error, fallback) {
+  console.error(error);
+  const msg = (error && error.message) || '';
+  if (/uzavreny|uzaverk/i.test(msg)) showToast('Trénink je už uzavřený');
+  else if (/plne/i.test(msg)) showToast('Auto je plné');
+  else if (/prihlaseny clen|opravneni/i.test(msg)) showToast('Na tohle nemáš oprávnění');
+  else showToast(fallback);
 }
 
 function goTraining(trainingId) {
@@ -2290,13 +4390,14 @@ async function toggleSeekingPartner(trainingId) {
   const t = getTraining(trainingId);
   if (!t || isSettled(t) || isPastDeadline(t)) return;
   const userId = state.currentUserId;
-  if (!t.lookingForPartner) t.lookingForPartner = [];
-  if (t.lookingForPartner.includes(userId)) {
-    t.lookingForPartner = t.lookingForPartner.filter(id => id !== userId);
-  } else {
-    t.lookingForPartner.push(userId);
-  }
-  await saveTraining(t);
+  const seeking = !(t.lookingForPartner || []).includes(userId);
+
+  const { error } = await db.rpc('training_set_partner', {
+    p_training_id: trainingId, p_seeking: seeking
+  });
+  if (error) { showDbError(error, 'Nepovedlo se to uložit'); return; }
+
+  await reloadTraining(trainingId);
   render();
 }
 
@@ -2325,7 +4426,10 @@ async function adjustArrival(trainingId, minutesDelta) {
   const el = document.getElementById('arrival-' + trainingId);
   if (el) el.textContent = newTime;
 
-  await saveTraining(t);
+  const { error } = await db.rpc('training_set_arrival', {
+    p_training_id: trainingId, p_time: newTime
+  });
+  if (error) showDbError(error, 'Čas příjezdu se neuložil');
 }
 
 async function doGoTraining(trainingId) {
@@ -2339,12 +4443,12 @@ async function doGoTraining(trainingId) {
     showToast('Uzávěrka už prošla (21:00 dne tréninku)');
     return;
   }
-  const userId = state.currentUserId;
-  if (!t.registrations.includes(userId)) {
-    t.registrations.push(userId);
-  }
-  if (t.declined) t.declined = t.declined.filter(id => id !== userId);
-  await saveTraining(t);
+  const { error } = await db.rpc('training_set_attendance', {
+    p_training_id: trainingId, p_status: 'going'
+  });
+  if (error) { showDbError(error, 'Přihlášení se nepovedlo'); return; }
+
+  await reloadTraining(trainingId);
   showToast('✅ Přihlášeno na trénink');
   render();
 }
@@ -2360,11 +4464,12 @@ async function declineTraining(trainingId) {
     showToast('Uzávěrka už prošla (21:00 dne tréninku)');
     return;
   }
-  const userId = state.currentUserId;
-  t.registrations = t.registrations.filter(id => id !== userId);
-  if (!t.declined) t.declined = [];
-  if (!t.declined.includes(userId)) t.declined.push(userId);
-  await saveTraining(t);
+  const { error } = await db.rpc('training_set_attendance', {
+    p_training_id: trainingId, p_status: 'not_going'
+  });
+  if (error) { showDbError(error, 'Nepovedlo se to uložit'); return; }
+
+  await reloadTraining(trainingId);
   showToast('✕ Označeno: nejdeš');
   render();
 }
@@ -2373,10 +4478,12 @@ async function resetTrainingChoice(trainingId) {
   const t = getTraining(trainingId);
   if (!t) return;
   if (isSettled(t) || isPastDeadline(t)) return;
-  const userId = state.currentUserId;
-  t.registrations = t.registrations.filter(id => id !== userId);
-  if (t.declined) t.declined = t.declined.filter(id => id !== userId);
-  await saveTraining(t);
+  const { error } = await db.rpc('training_set_attendance', {
+    p_training_id: trainingId, p_status: 'none'
+  });
+  if (error) { showDbError(error, 'Nepovedlo se to uložit'); return; }
+
+  await reloadTraining(trainingId);
   render();
 }
 
@@ -2497,13 +4604,18 @@ function renderHistoryItem(tx) {
     training_charge: '🧗 Trénink',
     training_reward: '🧗 Trénink (odměna)',
     cash_deposit: '💵 Hotovostní vklad',
-    bank_deposit: '🏦 Bankovní vklad',
+    bank_deposit: '🏦 Platba na účet',
+    membership_fee: '🎫 Členský příspěvek',
     cash_withdrawal: '💵 Hotovostní výběr',
     bank_withdrawal: '🏦 Bankovní výběr',
     correction: '✎ Ruční korekce',
+    event_charge: '🏕️ Akce',
     initial_balance: 'Počáteční stav'
   };
   let desc = typeLabels[tx.type] || tx.type;
+  if (tx.type === 'event_adjustment') {
+    desc = tx.amount >= 0 ? '🎁 Sleva z akce' : '➕ Doúčtování akce';
+  }
   if (tx.trainingId) {
     const t = getTraining(tx.trainingId);
     if (t) desc = `🧗 ${t.venue} (${formatTrainingDate(t.datetime)})`;
@@ -2514,7 +4626,7 @@ function renderHistoryItem(tx) {
       <div class="history-date">${formatDate(tx.createdAt)}</div>
       <div class="history-desc">${desc}</div>
       <div class="history-amount ${amountClass}">${formatKc(tx.amount)}</div>
-      <div class="history-balance">stav po: ${formatKc(tx.balanceAfter)}</div>
+      ${Number.isFinite(Number(tx.balanceAfter)) ? `<div class="history-balance">stav po: ${formatKc(tx.balanceAfter)}</div>` : ''}
       ${tx.description ? `<div class="history-note">"${tx.description}"</div>` : ''}
     </div>
   `;
@@ -2648,6 +4760,8 @@ function renderAdminDashboard() {
     .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
 
   return `
+    ${renderAdminPayments()}
+
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-label">Členů</div>
@@ -2809,29 +4923,47 @@ function renderAdminTrainingItem(t) {
   `;
 }
 
+// Sauna se generuje automaticky a ma vlastni pravidla - pozname ji podle mista.
+function isSaunaTraining(training) {
+  return !!(training && training.venue && training.venue.toLowerCase().includes('sauna'));
+}
+
+// Nejblizsi pristi uterek v 18:00 (dnesni uterek se pocita jen pred 18:00).
+function nextTuesday() {
+  const d = new Date();
+  d.setHours(18, 0, 0, 0);
+  let daysToTuesday = (2 - d.getDay() + 7) % 7;
+  if (daysToTuesday === 0 && new Date() >= d) daysToTuesday = 7;
+  d.setDate(d.getDate() + daysToTuesday);
+  return d;
+}
+
 function openTrainingForm(editId) {
   const editing = editId ? getTraining(editId) : null;
 
-  // Smart prefill: pokud editujeme, použij datum tréninku.
-  // Pokud vytváříme nový, najdi nejnovější trénink (i v minulosti) a přidej 7 dní.
-  // Pokud žádný neexistuje, použij příští úterý 18:00.
+  // Predvyplneni data:
+  //  - editace: datum toho treninku
+  //  - novy: posledni LEZECKY trenink + 7 dni (sauny se generuji samy kazde
+  //    pondeli, takze by jinak prebily radu uterku)
+  //  - kdyz by vyslo datum v minulosti nebo zadny lezecky trenink neni:
+  //    nejblizsi pristi uterek v 18:00
   let prefillDate;
   if (editing) {
     prefillDate = new Date(editing.datetime);
-  } else if (state.trainings.length > 0) {
-    // Vezmi nejnovější trénink (podle data, ne podle vytvoření)
-    const sorted = [...state.trainings].sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
-    const latest = new Date(sorted[0].datetime);
-    prefillDate = new Date(latest);
-    prefillDate.setDate(prefillDate.getDate() + 7); // +1 týden
   } else {
-    // Žádný trénink ještě nebyl: najdi příští úterý 18:00
-    prefillDate = new Date();
-    prefillDate.setHours(18, 0, 0, 0);
-    const dayOfWeek = prefillDate.getDay(); // 0=Ne, 1=Po, 2=Út, ...
-    let daysToTuesday = (2 - dayOfWeek + 7) % 7;
-    if (daysToTuesday === 0 && new Date().getHours() >= 18) daysToTuesday = 7; // dnes je úterý po 18h → příští úterý
-    prefillDate.setDate(prefillDate.getDate() + daysToTuesday);
+    const lezecke = state.trainings
+      .filter(t => !isSaunaTraining(t))
+      .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
+
+    if (lezecke.length > 0) {
+      prefillDate = new Date(lezecke[0].datetime);
+      prefillDate.setDate(prefillDate.getDate() + 7);
+    }
+
+    // Zadny lezecky trenink, nebo by nove datum vyslo v minulosti
+    if (!prefillDate || prefillDate < new Date()) {
+      prefillDate = nextTuesday();
+    }
   }
 
   // Převést na local datetime string ve formátu YYYY-MM-DDTHH:MM
@@ -2926,7 +5058,12 @@ async function saveTrainingForm(editId) {
     state.trainings.push(training);
   }
 
-  await saveTraining(training);
+  const ulozeno = await saveTraining(training);
+  if (!ulozeno) {
+    if (!editId) state.trainings = state.trainings.filter(t => t.id !== training.id);
+    render();
+    return;   // modal zustava otevreny
+  }
   closeModal();
   showToast(editId ? 'Trénink uložen' : 'Trénink vytvořen ✓');
   render();
@@ -2934,6 +5071,8 @@ async function saveTrainingForm(editId) {
 
 async function deleteTraining(id) {
   if (!confirm('Opravdu smazat tento trénink?')) return;
+  const removed = getTraining(id);
+  const isSauna = !!(removed && removed.venue && removed.venue.toLowerCase().includes('sauna'));
   const txsToRemove = state.transactions.filter(tx => tx.trainingId === id);
   state.transactions = state.transactions.filter(tx => tx.trainingId !== id);
   state.trainings = state.trainings.filter(t => t.id !== id);
@@ -2941,15 +5080,25 @@ async function deleteTraining(id) {
   const affectedMembers = new Set(txsToRemove.map(tx => tx.memberId));
   affectedMembers.forEach(mid => recalcBalance(mid));
 
-  // Delete from Supabase
-  await deleteTrainingFromDb(id);
+  // Saunu aplikace generuje sama - kdyz ji admin smaze, ulozime misto smazani
+  // priznak 'zruseno', aby ji automatika na stejny termin nevytvorila znovu.
+  if (isSauna) {
+    addSaunaSkipDate(removed.datetime);
+    const cancelled = Object.assign({}, removed, {
+      status: 'cancelled',
+      registrations: [], declined: [], lookingForPartner: [], attendedIds: []
+    });
+    state.cancelledTrainings.push(cancelled);
+    await saveTraining(cancelled);
+  } else {
+    await deleteTrainingFromDb(id);
+  }
   // Update balances of affected members in Supabase
   for (const mid of affectedMembers) {
-    const member = getMember(mid);
-    if (member) await saveMember(member);
+    await saveMemberBalance(mid);
   }
   closeModal();
-  showToast('Trénink smazán');
+  showToast(isSauna ? 'Sauna zrušena – sama se už nevytvoří' : 'Trénink smazán');
   render();
 }
 
@@ -3052,8 +5201,7 @@ async function unsettleTraining(trainingId) {
   await deleteTransactionsByTraining(trainingId);
   await saveTraining(t);
   for (const mid of removedMemberIds) {
-    const m = getMember(mid);
-    if (m) await saveMember(m);
+    await saveMemberBalance(mid);
   }
 
   showToast('↩ Zúčtování vráceno – můžeš opravit');
@@ -3200,10 +5348,10 @@ function openAddAttendeePicker(trainingId) {
 
 function filterPickerList(q) {
   const items = document.querySelectorAll('.picker-item');
-  const query = q.toLowerCase().trim();
+  const query = normText(q).trim();
   items.forEach(item => {
-    const name = item.dataset.name;
-    item.style.display = name.includes(query) ? '' : 'none';
+    const name = normText(item.dataset.name || '');
+    item.style.display = (!query || name.includes(query)) ? '' : 'none';
   });
 }
 
@@ -3308,8 +5456,8 @@ async function performSettlement(trainingId) {
   for (const memberId of attendedIds) {
     const member = getMember(memberId);
     if (member) {
-      await saveMember(member);
-      console.log('💾 Člen uložen:', member.name, '| Balance:', member.balance);
+      await saveMemberBalance(memberId);
+      console.log('💾 Konto přepočítáno:', member.name, '| Balance:', member.balance);
     }
   }
 
@@ -3329,10 +5477,105 @@ async function performSettlement(trainingId) {
 // ============================================
 // ADMIN - MEMBERS
 // ============================================
+// Hledani bez ohledu na diakritiku a velikost pismen ("dvorak" najde "Dvorak").
+function normText(v) {
+  return String(v == null ? '' : v).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function escapeAttr(v) {
+  return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+}
+
+// Filtrujeme primo v DOM (bez prekresleni), aby policko neztratilo kurzor.
+function filterMembers(q) {
+  state.ui.memberSearch = q;
+  const needle = normText(q).trim();
+  const items = document.querySelectorAll('#member-list .admin-list-item');
+  let visible = 0;
+  items.forEach(el => {
+    const hay = el.getAttribute('data-search') || '';
+    const show = !needle || hay.includes(needle);
+    el.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const empty = document.getElementById('member-search-empty');
+  if (empty) empty.style.display = (items.length && visible === 0) ? '' : 'none';
+}
+
+function setFeeFilter(f) {
+  state.ui.feeFilter = f;
+  state.ui.memberSearch = '';
+  render();
+}
+
+function setFeeSeason(r) {
+  state.ui.feeSeason = parseInt(r) || aktualniSezona();
+  render();
+}
+
+function kopirujEmailyNezaplacenych() {
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const emaily = state.members
+    .filter(m => m.isActive !== false && m.email && !maZaplacenyPrispevek(m.id, sezona))
+    .map(m => m.email);
+  if (!emaily.length) { showToast('Nikdo k zkopírování'); return; }
+  const text = emaily.join('; ');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => showToast(`✓ ${emaily.length} e-mailů ve schránce`))
+      .catch(() => showToast('Kopírování nevyšlo'));
+  } else {
+    showToast('Kopírování v tomhle prohlížeči nejde');
+  }
+}
+
+async function oznacPrispevek(memberId, typ) {
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const { error } = await db.rpc('set_membership_fee', {
+    p_member_id: memberId, p_fee_type: typ, p_season: sezona, p_note: 'hotovost'
+  });
+  if (error) { showDbError(error, 'Zápis příspěvku se nepovedl'); return; }
+  await nactiPrispevky();
+  closeModal();
+  showToast('✓ Příspěvek zapsán');
+  render();
+}
+
+async function zrusPrispevek(memberId) {
+  if (!confirm('Opravdu vzít zápis příspěvku zpět?')) return;
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const { error } = await db.rpc('unset_membership_fee', { p_member_id: memberId, p_season: sezona });
+  if (error) { showDbError(error, 'Zrušení se nepovedlo'); return; }
+  await nactiPrispevky();
+  closeModal();
+  showToast('Zápis příspěvku zrušen');
+  render();
+}
+
+function clearMemberSearch() {
+  state.ui.memberSearch = '';
+  const input = document.getElementById('member-search');
+  if (input) input.value = '';
+  filterMembers('');
+  if (input) input.focus();
+}
+
 function renderAdminMembers() {
   state.members.forEach(m => recalcBalance(m.id));
   const settings = getSettings();
   const sorted = [...state.members].sort((a, b) => a.balance - b.balance);
+
+  // Filtr podle clenskych prispevku (jen kdyz uz bezel SQL krok 11)
+  const sezona = state.ui.feeSeason ?? aktualniSezona();
+  const feeFiltr = state.feesReady ? (state.ui.feeFilter || 'all') : 'all';
+  const zaplatili = sorted.filter(m => maZaplacenyPrispevek(m.id, sezona));
+  const nezaplatili = sorted.filter(m => !maZaplacenyPrispevek(m.id, sezona));
+  const seznam = feeFiltr === 'paid' ? zaplatili : (feeFiltr === 'unpaid' ? nezaplatili : sorted);
+
+  const needle = normText(state.ui.memberSearch || '').trim();
+  const visibleCount = needle
+    ? seznam.filter(m => normText(`${m.name} ${m.email || ''}`).includes(needle)).length
+    : seznam.length;
 
   return `
     <div class="quick-actions" style="margin-bottom: 16px;">
@@ -3340,28 +5583,83 @@ function renderAdminMembers() {
       <button onclick="openBulkImport()">📥 Hromadný import</button>
     </div>
 
+    ${state.feesReady ? `
+      <div style="margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;">
+          <div style="font-size:12px;color:var(--ink-soft);font-weight:600;">🎫 Členské příspěvky</div>
+          <select onchange="setFeeSeason(this.value)"
+            style="font-size:12px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:white;">
+            ${[0, 1, 2].map(i => aktualniSezona() - i).map(r =>
+              `<option value="${r}"${r === sezona ? ' selected' : ''}>Sezóna ${popisSezony(r)}</option>`).join('')}
+          </select>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn-choice${feeFiltr === 'all' ? ' selected' : ''}" onclick="setFeeFilter('all')"
+            style="padding:6px 10px;font-size:12px;">Všichni ${sorted.length}</button>
+          <button class="btn-choice${feeFiltr === 'paid' ? ' selected' : ''}" onclick="setFeeFilter('paid')"
+            style="padding:6px 10px;font-size:12px;">✓ Zaplaceno ${zaplatili.length}</button>
+          <button class="btn-choice${feeFiltr === 'unpaid' ? ' selected' : ''}" onclick="setFeeFilter('unpaid')"
+            style="padding:6px 10px;font-size:12px;">✗ Nezaplaceno ${nezaplatili.length}</button>
+        </div>
+        ${feeFiltr === 'unpaid' && nezaplatili.filter(m => m.email).length ? `
+          <button class="btn btn-secondary" style="width:100%;margin-top:8px;padding:8px;font-size:13px;"
+            onclick="kopirujEmailyNezaplacenych()">
+            📋 Kopírovat e-maily nezaplacených (${nezaplatili.filter(m => m.email).length})
+          </button>
+        ` : ''}
+      </div>
+    ` : ''}
+
+    ${sorted.length > 5 ? `
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink-soft);margin-bottom:8px;">
+        <span class="fee-dot paid"></span> příspěvek zaplacen
+        <span class="fee-dot unpaid" style="margin-left:10px;"></span> nezaplacen
+        <button onclick="vysvetliPuntik()" title="Co znamená puntík?"
+          style="margin-left:4px;width:18px;height:18px;border-radius:50%;border:1px solid var(--line);background:white;color:var(--ink-soft);font-size:11px;cursor:pointer;line-height:1;">?</button>
+      </div>
+
+      <div class="form-group" style="margin-bottom: 12px; position: relative;">
+        <input type="search" id="member-search" autocomplete="off"
+          placeholder="Hledat člena – jméno nebo email"
+          value="${escapeAttr(state.ui.memberSearch || '')}"
+          oninput="filterMembers(this.value)">
+        <div style="font-size: 12px; color: var(--ink-soft); margin-top: 6px;">
+          ${feeFiltr === 'all' ? `${sorted.length} členů celkem` : `${seznam.length} z ${sorted.length} členů`}
+        </div>
+      </div>
+    ` : ''}
+
     ${sorted.length === 0 ? `
       <div class="empty-msg">
         <div class="icon">👥</div>
         <div>Žádní členové. Přidej prvního.</div>
         <button class="btn btn-primary" style="margin-top: 16px;" onclick="openMemberForm()">+ Přidat člena</button>
       </div>
-    ` : sorted.map(m => {
+    ` : '<div id="member-list">' + seznam.map(m => {
       let badge = '';
       let amountClass = '';
+      const hay = normText(`${m.name} ${m.email || ''}`);
+      const hidden = needle && !hay.includes(needle);
       if (m.balance < settings.debtLimit) { badge = '<span class="status-badge" style="background: var(--accent-dim); color: var(--accent);">DLUH</span>'; amountClass = 'red'; }
       else if (m.balance > settings.creditLimit) { badge = '<span class="status-badge open">PŘEPLATEK</span>'; amountClass = 'green'; }
       return `
-        <div class="admin-list-item" onclick="openMemberDetail('${m.id}')">
+        <div class="admin-list-item" onclick="openMemberDetail('${m.id}')"
+          data-search="${escapeAttr(hay)}"${hidden ? ' style="display: none;"' : ''}>
           <div class="member-avatar">${getInitials(m.name)}</div>
           <div class="info">
-            <div class="title">${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''} ${badge}</div>
+            <div class="title"><span class="fee-dot ${maZaplacenyPrispevek(m.id, sezona) ? 'paid' : 'unpaid'}" title="Členský příspěvek ${popisSezony(sezona)}"></span>${m.name}${m.isAdmin ? ' <span class="admin-badge">ADMIN</span>' : ''}${m.isSaunaAdmin ? ' <span class="admin-badge" style="background: var(--warning);">SAUNA</span>' : ''} ${badge}</div>
             <div class="subtitle">${m.email || 'bez emailu'}</div>
           </div>
           <div class="right ${amountClass}">${formatKc(m.balance)}</div>
         </div>
       `;
-    }).join('')}
+    }).join('') + `
+      <div id="member-search-empty" class="empty-msg" style="display: ${visibleCount === 0 ? '' : 'none'};">
+        <div class="icon">🔍</div>
+        <div>${seznam.length === 0 ? (feeFiltr === 'unpaid' ? 'Všichni mají zaplaceno. 👏' : 'Zaplaceno zatím nikdo.') : 'Nikdo takový tu není.'}</div>
+        <button class="btn btn-secondary" style="margin-top: 12px;" onclick="clearMemberSearch()">Zrušit hledání</button>
+      </div>
+    </div>`}
   `;
 }
 
@@ -3527,6 +5825,61 @@ function openMemberDetail(id) {
       <button onclick="openCorrectionForm('${m.id}')">✎ Korekce</button>
       <button onclick="openMemberForm('${m.id}')">⚙ Upravit</button>
     </div>
+
+    ${(() => {
+      // Ohlasene platby jde potvrdit i tady, nejen na dashboardu.
+      const ceka = cekajiciPlatbyClena(m.id);
+      if (!ceka.length) return '';
+      return `
+        <div style="background:var(--accent-dim);border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:6px;">
+            ⏳ Ohlášené platby k potvrzení (${ceka.length})
+          </div>
+          ${ceka.map(c => `
+            <div style="padding:6px 0;border-top:1px solid rgba(0,0,0,0.06);">
+              <div style="font-size:14px;font-weight:600;">${c.amount} Kč</div>
+              <div style="font-size:12px;color:var(--ink-soft);">
+                ${popisCekajiciPlatby(c)} · ohlášeno ${new Date(c.createdAt).toLocaleDateString('cs-CZ')}
+              </div>
+              <div style="display:flex;gap:6px;margin-top:6px;">
+                <button class="btn btn-primary" style="padding:5px 12px;font-size:12px;"
+                  onclick="potvrditPlatbu('${c.id}', '${m.id}')">✓ Potvrdit</button>
+                <button class="btn btn-secondary" style="padding:5px 12px;font-size:12px;"
+                  onclick="zamitnoutPlatbu('${c.id}', '${m.id}')">Zamítnout</button>
+              </div>
+            </div>`).join('')}
+          <div style="font-size:11px;color:var(--ink-soft);margin-top:8px;">
+            Potvrď až podle bankovního výpisu – teprve tím se částka připíše.
+          </div>
+        </div>`;
+    })()}
+
+    ${state.feesReady ? (() => {
+      const sezona = state.ui.feeSeason ?? aktualniSezona();
+      const fee = prispevekSezony(m.id, sezona);
+      return `
+        <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:4px;">🎫 Členský příspěvek ${popisSezony(sezona)}</div>
+          ${fee ? `
+            <div style="font-size:12px;color:var(--ink-soft);">
+              Zaplaceno ${fee.amount} Kč (${fee.feeType === 'reduced' ? 'zvýhodněný' : 'plný'})
+              · ${new Date(fee.paidAt).toLocaleDateString('cs-CZ')}${fee.note ? ` · ${fee.note}` : ''}
+            </div>
+            <button class="btn btn-secondary" style="margin-top:8px;padding:6px 12px;font-size:12px;"
+              onclick="zrusPrispevek('${m.id}')">Vzít zápis zpět</button>
+          ` : `
+            <div style="font-size:12px;color:var(--ink-soft);">
+              Nezaplaceno. Když přinesl hotovost, zapiš to tady – na konto se nic nepřipíše.
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+                onclick="oznacPrispevek('${m.id}','full')">✓ Plný ${settings.feeFull} Kč</button>
+              <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;"
+                onclick="oznacPrispevek('${m.id}','reduced')">✓ Zvýhodněný ${settings.feeReduced} Kč</button>
+            </div>
+          `}
+        </div>`;
+    })() : ''}
 
     <div class="section-title" style="margin-top: 8px;">Historie (${history.length})</div>
     ${history.length === 0 ? `
@@ -3738,7 +6091,35 @@ function renderAdminSettings() {
       <h3>Číslo účtu</h3>
       <p style="color: var(--ink-soft); font-size: 13px; margin-bottom: 10px;">Zobrazí se členům s dluhem.</p>
       <input type="text" id="set-bank" value="${s.bankAccount || ''}" placeholder="1234567890/0100">
+      <div style="font-size: 12px; color: var(--ink-soft); margin-top: 4px;">
+        Ve tvaru 1234567890/0100 – z něj se dělá QR kód k platbě.
+      </div>
     </div>
+
+    <div class="section-title" style="margin: 16px 0 8px;">Roční příspěvky</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <div class="form-group" style="margin:0;">
+        <label>Plný (Kč)</label>
+        <input type="number" id="set-fee-full" min="0" value="${s.feeFull ?? 800}">
+      </div>
+      <div class="form-group" style="margin:0;">
+        <label>Zvýhodněný (Kč)</label>
+        <input type="number" id="set-fee-reduced" min="0" value="${s.feeReduced ?? 500}">
+      </div>
+    </div>
+    ${state.feesReady ? `
+      <div class="form-group">
+        <label>Sezóna příspěvků začíná měsícem</label>
+        <select id="set-fee-season-month">
+          ${['leden','únor','březen','duben','květen','červen','červenec','srpen','září','říjen','listopad','prosinec']
+            .map((nazev, i) => `<option value="${i + 1}"${(s.feeSeasonStartMonth ?? 9) === i + 1 ? ' selected' : ''}>${i + 1} – ${nazev}</option>`).join('')}
+        </select>
+        <div style="font-size:12px;color:var(--ink-soft);margin-top:6px;">
+          Teď běží sezóna <strong>${popisSezony(aktualniSezona())}</strong>.
+          Lednem se z toho stane obyčejný kalendářní rok.
+        </div>
+      </div>
+    ` : ''}
 
     <div class="settings-card">
       <h3>Limity konta</h3>
@@ -3767,6 +6148,10 @@ function renderAdminSettings() {
 async function saveSettings() {
   state.setup.clubName = document.getElementById('set-clubname').value.trim() || 'NaturClimb';
   state.setup.bankAccount = document.getElementById('set-bank').value.trim();
+  state.setup.feeFull = parseInt(document.getElementById('set-fee-full')?.value) || 0;
+  state.setup.feeReduced = parseInt(document.getElementById('set-fee-reduced')?.value) || 0;
+  const mesicSezony = parseInt(document.getElementById('set-fee-season-month')?.value);
+  if (mesicSezony >= 1 && mesicSezony <= 12) state.setup.feeSeasonStartMonth = mesicSezony;
   state.setup.debtLimit = parseInt(document.getElementById('set-debt').value) || -500;
   state.setup.creditLimit = parseInt(document.getElementById('set-credit').value) || 500;
   await saveSetup();
@@ -3802,6 +6187,10 @@ function closeModal() {
   const overlay = document.getElementById('modal-overlay');
   if (overlay) overlay.remove();
   document.body.style.overflow = '';
+  if (obnovitPoZavreniDialogu) {
+    obnovitPoZavreniDialogu = false;
+    naplanujObnovu(300);
+  }
 }
 
 // ============================================
@@ -3894,11 +6283,17 @@ function loadDemoData() {
   const isLocal = window.location.protocol === 'file:';
   if (isLocal) {
     loadDemoData();
-  } else {
-    await loadAllData();
-    await autoGenerateSauna();
+    render();
+    return;
   }
-  render();
+
+  // Ma tento prohlizec jeste platne prihlaseni? Pokud ano, jdeme rovnou dovnitr.
+  const { data } = await db.auth.getSession();
+  if (data && data.session) {
+    await afterLogin();
+  } else {
+    render();   // prihlasovaci obrazovka
+  }
 })();
 </script>
 
