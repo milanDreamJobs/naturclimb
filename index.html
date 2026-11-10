@@ -761,6 +761,7 @@ const state = {
   feesReady: false,
   itemsReady: false,
   deadlineReady: false,
+  memberEventsReady: false,
   settleReady: false,
   currentUserId: null,
   currentView: 'member',
@@ -897,6 +898,11 @@ async function loadAllData() {
     const { data: eventsData, error: evErr } = await db
       .from('events').select('*').order('start_datetime');
     if (evErr) console.error('❌ Events error:', evErr);
+    // Kontrola zda existuji sloupce created_by_member a is_draft (SQL krok 15)
+    if (!state.memberEventsReady) {
+      const { error: mevErr } = await db.from('events').select('created_by_member').limit(1);
+      state.memberEventsReady = !mevErr;
+    }
     state.events = (eventsData || []).map(e => ({
       id: e.id, name: e.name,
       startDatetime: e.start_datetime, endDatetime: e.end_datetime,
@@ -910,7 +916,9 @@ async function loadAllData() {
       item5Name: e.item5_name || '', item5Price: e.item5_price || 0,
       item6Name: e.item6_name || '', item6Price: e.item6_price || 0,
       settlementDeadline: e.settlement_deadline || null,
-      status: e.status || 'open', createdAt: e.created_at
+      status: e.status || 'open', createdAt: e.created_at,
+      createdByMember: e.created_by_member || null,
+      isDraft: e.is_draft || false
     }));
 
     // Event registrations
@@ -1121,6 +1129,10 @@ async function saveEvent(event) {
     } : {}),
     // sloupec s lhutou existuje teprve po SQL kroku 13
     ...(state.deadlineReady ? { settlement_deadline: event.settlementDeadline || null } : {}),
+    ...(state.memberEventsReady ? {
+      created_by_member: event.createdByMember || null,
+      is_draft: event.isDraft || false
+    } : {}),
     status: event.status || 'open'
   });
   if (error) { console.error('saveEvent:', error); showDbError(error, 'Akci se nepodařilo uložit'); return false; }
@@ -2554,6 +2566,17 @@ function renderMember() {
       </button>
     </div>
 
+    ${state.memberEventsReady ? `
+      <div style="margin-top: 16px;">
+        <button class="btn btn-secondary" style="width: 100%;" onclick="openEventForm(null, true)">
+          🏕️ Navrhnout akci →
+        </button>
+        <div style="font-size: 12px; color: var(--ink-soft); margin-top: 6px; text-align: center;">
+          Tvůj návrh admin nejdřív schválí a pak ho uvidí ostatní
+        </div>
+      </div>
+    ` : ''}
+
     <div class="faq-section">
       <div class="section-title">Časté dotazy</div>
       <div class="faq-item">
@@ -2713,13 +2736,20 @@ function renderTrainingCard(t, userId) {
 // ============================================
 // AKCE – admin formulář
 // ============================================
-function openEventForm(editId) {
+function isEventAuthorOrAdmin(e) {
+  if (!e) return false;
+  return isAdmin() || (state.memberEventsReady && e.createdByMember === state.currentUserId && !e.isDraft);
+}
+
+function openEventForm(editId, memberMode) {
   const editing = editId ? getEvent(editId) : null;
+  const isMemberMode = memberMode || (!isAdmin() && !editing);
   const html = `
     <div class="modal-handle"></div>
     <button class="modal-close" onclick="closeModal()">×</button>
     <div class="modal-header">
-      <div class="modal-title">${editing ? 'Upravit akci' : '🏕️ Nová akce'}</div>
+      <div class="modal-title">${editing ? 'Upravit akci' : (isMemberMode ? '🏕️ Navrhnout akci' : '🏕️ Nová akce')}</div>
+      ${isMemberMode && !editing ? '<div class="modal-subtitle">Tvůj návrh admin nejdřív schválí a pak ho uvidí všichni.</div>' : ''}
     </div>
     <div class="form-group">
       <label>Název akce</label>
@@ -2777,13 +2807,13 @@ function openEventForm(editId) {
     <div class="form-actions">
       ${editing ? `<button class="btn btn-danger" onclick="deleteEvent('${editing.id}')">Smazat</button>` : ''}
       <button class="btn btn-secondary" onclick="closeModal()">Zrušit</button>
-      <button class="btn btn-primary" onclick="saveEventForm('${editId || ''}')">${editing ? 'Uložit' : 'Vytvořit akci'}</button>
+      <button class="btn btn-primary" onclick="saveEventForm('${editId || ''}', ${isMemberMode})">${editing ? 'Uložit' : (isMemberMode ? 'Navrhnout akci' : 'Vytvořit akci')}</button>
     </div>
   `;
   openModal(html);
 }
 
-async function saveEventForm(editId) {
+async function saveEventForm(editId, memberMode) {
   const name = document.getElementById('ev-name').value.trim();
   const venue = document.getElementById('ev-venue').value.trim();
   const start = document.getElementById('ev-start').value;
@@ -2805,7 +2835,8 @@ async function saveEventForm(editId) {
     event = getEvent(editId);
     Object.assign(event, { name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed }, polozky);
   } else {
-    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, ...polozky, status: 'open', createdAt: new Date().toISOString() };
+    const isMemberMode = memberMode && !isAdmin();
+    event = { id: genId(), name, venue, startDatetime: new Date(start).toISOString(), endDatetime: new Date(end).toISOString(), priceAccommodation: acc, priceAccommodationReduced: accRed, ...polozky, status: 'open', createdAt: new Date().toISOString(), isDraft: isMemberMode, createdByMember: isMemberMode ? state.currentUserId : null };
     state.events.push(event);
   }
   const ulozeno = await saveEvent(event);
@@ -2815,7 +2846,11 @@ async function saveEventForm(editId) {
     return;   // modal zustava otevreny
   }
   closeModal();
-  showToast(`✓ Akce "${name}" uložena`);
+  if (event.isDraft) {
+    showToast('✓ Návrh akce odeslán – admin ho brzy zkontroluje');
+  } else {
+    showToast(`✓ Akce "${name}" uložena`);
+  }
   render();
 }
 
@@ -2829,6 +2864,37 @@ async function deleteEvent(eventId) {
   await db.from('events').delete().eq('id', eventId);
   closeModal();
   showToast('Akce smazána');
+  render();
+}
+
+async function approveEventDraft(eventId) {
+  const e = getEvent(eventId);
+  if (!e || !e.isDraft) return;
+  e.isDraft = false;
+  const { error } = await db.from('events').update({ is_draft: false }).eq('id', eventId);
+  if (error) { showDbError(error, 'Schválení selhalo'); e.isDraft = true; return; }
+  showToast(`✓ Akce „${e.name}" schválena – vidí ji všichni členové`);
+  render();
+}
+
+async function rejectEventDraft(eventId) {
+  const e = getEvent(eventId);
+  if (!e) return;
+  if (!confirm(`Odmítnout a smazat návrh „${e.name}"?`)) return;
+  state.events = state.events.filter(ev => ev.id !== eventId);
+  await db.from('events').delete().eq('id', eventId);
+  showToast('Návrh akce odmítnut a smazán');
+  render();
+}
+
+async function withdrawDraftEvent(eventId) {
+  const e = getEvent(eventId);
+  if (!e || !e.isDraft) return;
+  if (!confirm('Stáhnout návrh akce? Akce bude smazána.')) return;
+  state.events = state.events.filter(ev => ev.id !== eventId);
+  await db.from('events').delete().eq('id', eventId);
+  closeModal();
+  showToast('Návrh akce stažen');
   render();
 }
 
@@ -3491,7 +3557,14 @@ async function zuctujAkciPoStaru(eventId) {
 // Admin v sekci Akce vidi dal vsechno.
 function akceProClena() {
   return [...state.events]
-    .filter(e => e.status !== 'settled')
+    .filter(e => {
+      if (e.status === 'settled') return false;
+      if (e.isDraft) {
+        // Draft vidí jen autor
+        return e.createdByMember === state.currentUserId;
+      }
+      return true;
+    })
     .sort((a, b) => new Date(a.startDatetime) - new Date(b.startDatetime));
 }
 
@@ -3680,14 +3753,23 @@ function renderEventCard(e) {
   const nights = Math.ceil((new Date(e.endDatetime) - new Date(e.startDatetime)) / (1000*60*60*24));
   const isPast = new Date(e.endDatetime) < new Date();
   return `
-    <div class="training" style="border-left:3px solid var(--accent);">
+    <div class="training" style="border-left:3px solid ${e.isDraft ? '#f59e0b' : 'var(--accent)'};">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
         <div>
           <div style="font-weight:700;font-size:16px;">🏕️ ${e.name}</div>
           <div style="font-size:13px;color:var(--ink-soft);">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
         </div>
-        ${e.status==='settled'?'<span class="status-badge settled">Zúčtováno</span>':''}
+        ${e.isDraft ? '<span class="status-badge" style="background:#fef3c7;color:#92400e;">⏳ Čeká na schválení</span>' : e.status==='settled' ? '<span class="status-badge settled">Zúčtováno</span>' : ''}
       </div>
+      ${e.isDraft ? `
+        <div style="background:rgba(245,158,11,0.08);border:1.5px solid rgba(245,158,11,0.3);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px;color:#92400e;">
+          Tvůj návrh čeká na schválení adminem. Zatím ho ostatní nevidí.
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn-choice" style="flex:1;" onclick="openEventForm('${e.id}')">✎ Upravit návrh</button>
+            <button class="btn-choice" style="flex:1;color:#dc2626;" onclick="withdrawDraftEvent('${e.id}')">✕ Stáhnout</button>
+          </div>
+        </div>
+      ` : ''}
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:12px;font-size:13px;">
         <div style="background:rgba(15,32,39,0.04);border-radius:8px;padding:8px;">🏠 Ubytování<br><strong>${e.priceAccommodation} Kč/noc</strong><br><span style="color:var(--ink-soft)">${nights} nocí = ${nights*e.priceAccommodation} Kč</span></div>
         ${polozkyAkce(e).map(polozka =>
@@ -3726,9 +3808,19 @@ function renderEventCard(e) {
         <button class="btn-choice" style="flex:1;" onclick="showEventAttendees('${e.id}')">👥 ${regs.length} přihlášených</button>
         <button class="btn-choice" style="flex:1;" onclick="showEventRides('${e.id}')">🚗 Odvoz (${rides.length})</button>
       </div>
-      ${!isPast?`<button class="btn-choice" style="width:100%;" onclick="openRideOffer('${e.id}')">🚗 Nabídnout/upravit odvoz</button>`:''}
+      ${!isPast && !e.isDraft ?`<button class="btn-choice" style="width:100%;" onclick="openRideOffer('${e.id}')">🚗 Nabídnout/upravit odvoz</button>`:''}
+      ${isEventAuthorOrAdmin(e) && !e.isDraft ? `
+        <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(15,32,39,0.08);">
+          <div style="font-size:11px;color:var(--ink-soft);margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">Správa akce</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn-choice" onclick="openEventForm('${e.id}')">✎ Upravit</button>
+            <button class="btn-choice" onclick="openEventDetail('${e.id}')">📊 Přehled</button>
+            ${e.status !== 'settled' ? `<button class="btn-choice" onclick="openAdminSettlement('${e.id}')">💰 Zúčtovat</button>` : ''}
+          </div>
+        </div>
+      ` : ''}
     </div>
-  `;
+  \`;
 }
 
 // ISO datum -> hodnota pro <input type="datetime-local"> v mistnim case.
@@ -4769,7 +4861,19 @@ function renderAdminTab() {
   }
 }
 
+function renderAdminDraftBanner() {
+  if (!state.memberEventsReady) return '';
+  const drafts = state.events.filter(e => e.isDraft);
+  if (drafts.length === 0) return '';
+  return `
+    <div style="background:#fef3c7;border:1.5px solid #f59e0b;border-radius:12px;padding:12px 16px;margin-bottom:16px;cursor:pointer;" onclick="switchAdminTab('trainings')">
+      🟡 <strong>${drafts.length} ${drafts.length === 1 ? 'člen navrhl akci' : 'členové navrhli akce'}</strong> – zkontroluj návrhy →
+    </div>
+  `;
+}
+
 function renderAdminDashboard() {
+  const draftBanner = renderAdminDraftBanner();
   const settings = getSettings();
   state.members.forEach(m => recalcBalance(m.id));
 
@@ -4796,6 +4900,7 @@ function renderAdminDashboard() {
     .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
 
   return `
+    ${draftBanner}
     ${renderAdminPayments()}
 
     <div class="stats-grid">
@@ -4913,18 +5018,43 @@ function renderAdminTrainings() {
       🧖 ${saunaExists ? '✓ Sauna ' + formatTrainingDate(nextMonday.toISOString()) + ' již vytvořena' : 'Vytvořit pondělní saunu (' + formatTrainingDate(nextMonday.toISOString()) + ')'}
     </button>
 
-    ${state.events.length > 0 ? `
-      <div class="section-title">🏕️ Akce</div>
-      ${[...state.events].sort((a,b) => new Date(a.startDatetime) - new Date(b.startDatetime)).map(e => `
-        <div class="admin-list-item" onclick="openEventDetail('${e.id}')">
-          <div class="info">
-            <div class="title">${e.name} <span class="status-badge ${e.status === 'settled' ? 'settled' : 'open'}">${e.status === 'settled' ? 'Zúčtováno' : 'Otevřená'}</span></div>
-            <div class="subtitle">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
-          </div>
-          <div class="right">→</div>
-        </div>
-      `).join('')}
-    ` : ''}
+    ${(() => {
+      const drafts = state.events.filter(e => e.isDraft);
+      const approved = state.events.filter(e => !e.isDraft);
+      return `
+        ${drafts.length > 0 ? `
+          <div class="section-title" style="color:#92400e;">🟡 Návrhy členů (${drafts.length})</div>
+          ${drafts.map(e => {
+            const autor = state.members.find(m => m.id === e.createdByMember);
+            return `
+              <div class="admin-list-item" style="border-left:3px solid #f59e0b;">
+                <div class="info">
+                  <div class="title">${e.name}</div>
+                  <div class="subtitle">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
+                  <div class="subtitle" style="color:#92400e;">Navrhl/a: ${autor ? autor.name : 'neznámý člen'}</div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
+                  <button class="btn btn-primary" style="font-size:12px;padding:4px 10px;" onclick="approveEventDraft('${e.id}')">✓ Schválit</button>
+                  <button class="btn btn-danger" style="font-size:12px;padding:4px 10px;" onclick="rejectEventDraft('${e.id}')">✕ Odmítnout</button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        ` : ''}
+        ${approved.length > 0 ? `
+          <div class="section-title">🏕️ Akce</div>
+          ${[...approved].sort((a,b) => new Date(a.startDatetime) - new Date(b.startDatetime)).map(e => `
+            <div class="admin-list-item" onclick="openEventDetail('${e.id}')">
+              <div class="info">
+                <div class="title">${e.name} <span class="status-badge ${e.status === 'settled' ? 'settled' : 'open'}">${e.status === 'settled' ? 'Zúčtováno' : 'Otevřená'}</span>${e.createdByMember ? ' <span style="font-size:11px;color:var(--ink-soft);">📝 člen</span>' : ''}</div>
+                <div class="subtitle">${formatEventDate(e.startDatetime)} – ${formatEventDate(e.endDatetime)} · ${e.venue}</div>
+              </div>
+              <div class="right">→</div>
+            </div>
+          `).join('')}
+        ` : ''}
+      `;
+    })()}
 
     <div class="section-title">Nadcházející tréninky</div>
     ${upcoming.length === 0 ? `
