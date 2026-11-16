@@ -373,7 +373,7 @@ select 1 as poradi, 'sloupce pro akce clenu' as co,
          where table_schema='public' and table_name='events'
            and column_name in ('created_by_member','is_draft')) as hodnota
 union all
-select 2, 'pravidel u tabulky akci (ceka se 5)',
+select 2, 'pravidel u tabulky akci (ceka se 6)',
        (select count(*)::text from pg_policies
          where schemaname='public' and tablename='events')
 union all
