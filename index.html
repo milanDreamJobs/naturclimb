@@ -719,6 +719,62 @@
     font-family: monospace; font-size: 13px; resize: vertical;
   }
 .faq-section{margin-top:24px;margin-bottom:16px}.faq-item{background:white;border-radius:12px;overflow:hidden;margin-bottom:8px;box-shadow:0 2px 8px rgba(15,32,39,0.06)}.faq-question{width:100%;background:none;border:none;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;font-size:15px;font-weight:600;color:var(--ink);font-family:inherit;text-align:left}.faq-question:hover{background:rgba(15,32,39,0.03)}.faq-icon{font-size:20px;font-weight:300;color:var(--ink-soft);flex-shrink:0;transition:transform 0.2s}.faq-question.open .faq-icon{transform:rotate(45deg)}.faq-answer{font-size:14px;color:var(--ink-soft);line-height:1.6;padding:0 16px;max-height:0;overflow:hidden;transition:max-height 0.3s ease,padding 0.2s}.faq-answer.open{max-height:400px;padding:0 16px 14px}
+
+  /* ===== MEMBER PROFILE ===== */
+  .profile-card {
+    background: rgba(15,32,39,0.04);
+    border-radius: 14px;
+    padding: 16px;
+    margin-bottom: 24px;
+  }
+  .prof-section {
+    border-top: 1px solid var(--line);
+    padding: 12px 0 4px;
+    margin-bottom: 8px;
+  }
+  .prof-section:first-child { border-top: none; padding-top: 0; }
+  .prof-label {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    letter-spacing: .5px;
+    margin-bottom: 8px;
+  }
+  .prof-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 2px 0;
+  }
+  .prof-checkbox-row input[type=checkbox] { width: 16px; height: 16px; flex-shrink: 0; }
+  .prof-star {
+    font-size: 18px;
+    color: #ccc;
+    cursor: pointer;
+    line-height: 1;
+    transition: color .1s;
+    user-select: none;
+  }
+  .prof-star.active { color: var(--accent, #e63946); }
+  .prof-star:hover { color: var(--accent, #e63946); }
+  .prof-fee-status {
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .prof-fee-status.ok { background: rgba(39,174,96,.12); color: #1a7a40; }
+  .prof-fee-status.pending { background: rgba(243,156,18,.12); color: #8a6500; }
+  .prof-fee-status.unpaid { background: rgba(230,57,70,.1); color: var(--accent); }
+  .btn-link {
+    background: none; border: none; padding: 0; cursor: pointer;
+    color: inherit; text-decoration: underline; font-size: inherit;
+    font-weight: 700;
+  }
+  /* ===== /MEMBER PROFILE ===== */
 </style>
 </head>
 <body>
@@ -762,6 +818,8 @@ const state = {
   itemsReady: false,
   deadlineReady: false,
   memberEventsReady: false,
+  profile: null,
+  profileReady: false,
   settleReady: false,
   currentUserId: null,
   currentView: 'member',
@@ -959,6 +1017,7 @@ async function loadAllData() {
     await nactiPrispevky();
     await zjistiPolozky();
     await zjistiLhutu();
+    await loadProfile();
 
     // Event rides
     const { data: ridesData, error: riErr } = await db
@@ -1005,6 +1064,147 @@ async function saveSetup() {
     showToast('Chyba ukládání nastavení');
   }
 }
+
+// ============================================
+// MEMBER PROFILE
+// ============================================
+async function loadProfile() {
+  if (!state.currentUserId) return;
+  const { data, error } = await db
+    .from('member_profiles')
+    .select('*')
+    .eq('id', state.currentUserId)
+    .maybeSingle();
+  if (error?.code === '42P01') {
+    // Tabulka ještě neexistuje – degradace
+    state.profileReady = false;
+    return;
+  }
+  if (error) {
+    console.error('loadProfile error:', error);
+    state.profileReady = false;
+    return;
+  }
+  state.profileReady = true;
+  state.profile = data || {};
+}
+
+async function saveProfile() {
+  if (!state.currentUserId || !state.profileReady) return;
+  const p = state.profile || {};
+
+  const row = {
+    id: state.currentUserId,
+    birth_number:    (document.getElementById('prof-birth-number')?.value || '').trim() || null,
+    phone:           (document.getElementById('prof-phone')?.value || '').trim() || null,
+    is_student:      document.getElementById('prof-is-student')?.checked ?? false,
+    year_started:    parseInt(document.getElementById('prof-year-started')?.value) || null,
+    bio:             (document.getElementById('prof-bio')?.value || '').trim() || null,
+    preferred_areas: (document.getElementById('prof-preferred-areas')?.value || '').trim() || null,
+    chs_member:      document.getElementById('prof-chs-member')?.checked ?? false,
+    insurance:       document.querySelector('input[name="prof-insurance"]:checked')?.value || 'none',
+    insurance_number:(document.getElementById('prof-insurance-number')?.value || '').trim() || null,
+    // Jistění
+    belay_tube:      document.getElementById('prof-belay-tube')?.checked ?? false,
+    belay_semi_auto: document.getElementById('prof-belay-semi-auto')?.checked ?? false,
+    belay_auto:      document.getElementById('prof-belay-auto')?.checked ?? false,
+    // Přilba
+    helmet_never:     document.getElementById('prof-helmet-never')?.checked ?? false,
+    helmet_mountains: document.getElementById('prof-helmet-mountains')?.checked ?? false,
+    helmet_pisek:     document.getElementById('prof-helmet-pisek')?.checked ?? false,
+    helmet_sport:     document.getElementById('prof-helmet-sport')?.checked ?? false,
+    // Styl lezení
+    style_firstlead:           document.getElementById('prof-style-firstlead')?.checked ?? false,
+    style_firstlead_rating:    parseInt(document.getElementById('prof-style-firstlead-rating')?.value) || null,
+    style_firstlead_more:      document.getElementById('prof-style-firstlead-more')?.checked ?? false,
+    style_firstlead_mentor:    document.getElementById('prof-style-firstlead-mentor')?.checked ?? false,
+    style_firstlead_is_mentor: document.getElementById('prof-style-firstlead-is-mentor')?.checked ?? false,
+    style_toprope:           document.getElementById('prof-style-toprope')?.checked ?? false,
+    style_toprope_rating:    parseInt(document.getElementById('prof-style-toprope-rating')?.value) || null,
+    style_toprope_more:      document.getElementById('prof-style-toprope-more')?.checked ?? false,
+    style_toprope_mentor:    document.getElementById('prof-style-toprope-mentor')?.checked ?? false,
+    style_toprope_is_mentor: document.getElementById('prof-style-toprope-is-mentor')?.checked ?? false,
+    style_pisek:           document.getElementById('prof-style-pisek')?.checked ?? false,
+    style_pisek_rating:    parseInt(document.getElementById('prof-style-pisek-rating')?.value) || null,
+    style_pisek_more:      document.getElementById('prof-style-pisek-more')?.checked ?? false,
+    style_pisek_mentor:    document.getElementById('prof-style-pisek-mentor')?.checked ?? false,
+    style_pisek_is_mentor: document.getElementById('prof-style-pisek-is-mentor')?.checked ?? false,
+    style_boulder:           document.getElementById('prof-style-boulder')?.checked ?? false,
+    style_boulder_rating:    parseInt(document.getElementById('prof-style-boulder-rating')?.value) || null,
+    style_boulder_more:      document.getElementById('prof-style-boulder-more')?.checked ?? false,
+    style_boulder_mentor:    document.getElementById('prof-style-boulder-mentor')?.checked ?? false,
+    style_boulder_is_mentor: document.getElementById('prof-style-boulder-is-mentor')?.checked ?? false,
+    style_sport:           document.getElementById('prof-style-sport')?.checked ?? false,
+    style_sport_rating:    parseInt(document.getElementById('prof-style-sport-rating')?.value) || null,
+    style_sport_more:      document.getElementById('prof-style-sport-more')?.checked ?? false,
+    style_sport_mentor:    document.getElementById('prof-style-sport-mentor')?.checked ?? false,
+    style_sport_is_mentor: document.getElementById('prof-style-sport-is-mentor')?.checked ?? false,
+    style_multipitch:           document.getElementById('prof-style-multipitch')?.checked ?? false,
+    style_multipitch_rating:    parseInt(document.getElementById('prof-style-multipitch-rating')?.value) || null,
+    style_multipitch_more:      document.getElementById('prof-style-multipitch-more')?.checked ?? false,
+    style_multipitch_mentor:    document.getElementById('prof-style-multipitch-mentor')?.checked ?? false,
+    style_multipitch_is_mentor: document.getElementById('prof-style-multipitch-is-mentor')?.checked ?? false,
+    style_ice:           document.getElementById('prof-style-ice')?.checked ?? false,
+    style_ice_rating:    parseInt(document.getElementById('prof-style-ice-rating')?.value) || null,
+    style_ice_more:      document.getElementById('prof-style-ice-more')?.checked ?? false,
+    style_ice_mentor:    document.getElementById('prof-style-ice-mentor')?.checked ?? false,
+    style_ice_is_mentor: document.getElementById('prof-style-ice-is-mentor')?.checked ?? false,
+    grade:        (document.getElementById('prof-grade')?.value || '').trim() || null,
+    skill_rating: parseInt(document.getElementById('prof-skill-rating')?.value) || null,
+    // Bezpečnost
+    safety_basics:   parseInt(document.getElementById('prof-safety-basics')?.value) || null,
+    safety_pisek:    parseInt(document.getElementById('prof-safety-pisek')?.value) || null,
+    safety_alpine_s: parseInt(document.getElementById('prof-safety-alpine-s')?.value) || null,
+    safety_alpine_w: parseInt(document.getElementById('prof-safety-alpine-w')?.value) || null,
+    safety_rescue:   parseInt(document.getElementById('prof-safety-rescue')?.value) || null,
+    safety_firstaid: parseInt(document.getElementById('prof-safety-firstaid')?.value) || null,
+  };
+
+  const { error } = await db.from('member_profiles').upsert(row);
+  if (error) {
+    console.error('saveProfile error:', error);
+    showToast('Chyba ukládání profilu. Zkus znovu.');
+    return;
+  }
+  // Aktualizuj lokální stav
+  state.profile = { ...state.profile, ...row };
+  showToast('Profil uložen ✓');
+}
+
+// Pomocná funkce: vrátí hvězdičkový widget pro profil (1–10)
+function renderStars(id, value, label) {
+  const val = value || 0;
+  let stars = '';
+  for (let i = 1; i <= 10; i++) {
+    const cls = 'prof-star' + (i <= val ? ' active' : '');
+    stars += '<span class="' + cls + '" data-id="' + id + '" data-val="' + i + '"' +
+      ' onclick="toggleStar(' + "'" + id + "'," + i + ')" title="' + i + '">★</span>';
+  }
+  const valLabel = val > 0 ? '<span style="font-size:11px;color:var(--ink-soft);margin-left:4px;">' + val + '/10</span>' : '';
+  return '<div class="prof-stars" style="display:flex;gap:2px;align-items:center;">' +
+    stars + '<input type="hidden" id="' + id + '" value="' + val + '">' + valLabel + '</div>';
+}
+
+function toggleStar(id, val) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  const current = parseInt(input.value) || 0;
+  const newVal = current === val ? 0 : val;
+  input.value = newVal;
+  // Překreslit hvězdičky
+  const container = input.closest('.prof-stars');
+  if (!container) return;
+  container.querySelectorAll('.prof-star').forEach((s, i) => {
+    s.classList.toggle('active', i + 1 <= newVal);
+  });
+  // Popis vedle hvězdiček
+  const valSpan = container.querySelector('span[style*="font-size:11px"]');
+  if (valSpan) valSpan.textContent = newVal > 0 ? (newVal + '/10') : '';
+}
+
+// ============================================
+// /MEMBER PROFILE
+// ============================================
 
 // Zustatek se neposila jako cislo - databaze si ho dopocita ze skutecnych
 // transakci. Diky tomu ho nejde nastavit na libovolnou hodnotu.
@@ -2577,6 +2777,8 @@ function renderMember() {
       </div>
     ` : ''}
 
+    ${renderMemberProfile()}
+
     <div class="faq-section">
       <div class="section-title">Časté dotazy</div>
       <div class="faq-item">
@@ -2598,6 +2800,216 @@ function renderMember() {
           Příspěvky se platí v říjnu a listopadu. Nováčci mohou platit dříve – již od července – a členství jim platí až do dalšího roku.
         </div>
       </div>
+    </div>
+  `;
+}
+
+function renderMemberProfile() {
+  if (!state.profileReady) return '';
+  const p = state.profile || {};
+  const user = getCurrentUser();
+
+  // Stav přispěvků
+  let feeLine = '';
+  if (state.feesReady) {
+    const fee = prispevekSezony(user.id);
+    if (fee) {
+      feeLine = `<div class="prof-fee-status ok">✓ Příspěvky zaplaceny ${popisSezony(fee.seasonYear)}</div>`;
+    } else {
+      const ceka = mojeCekajiciPlatby().some(c => (c.feeAmount||0) > 0 || c.kind==='membership' || c.kind==='both');
+      if (ceka) {
+        feeLine = `<div class="prof-fee-status pending">⏳ Příspěvek ohlášen, čeká na potvrzení</div>`;
+      } else {
+        const settings = getSettings();
+        const castka = p.is_student ? settings.feeReduced : settings.feeFull;
+        feeLine = `<div class="prof-fee-status unpaid">✗ Příspěvky dosud nezaplaceny —
+          <button class="btn-link" onclick="openPaymentDialog('fee')">Zaplatit → (${castka} Kč)</button>
+        </div>`;
+      }
+    }
+  }
+
+  const styles = [
+    { key: 'firstlead', label: 'Lezu jen na prvním' },
+    { key: 'toprope',   label: 'Lezu TOP rope' },
+    { key: 'pisek',     label: 'Písek' },
+    { key: 'boulder',   label: 'Boulder' },
+    { key: 'sport',     label: 'Sport' },
+    { key: 'multipitch', label: 'Vícedélky' },
+    { key: 'ice',       label: 'Ledy / mixy' },
+  ];
+
+  const styleRows = styles.map(s => {
+    const leze = p[`style_${s.key}`] || false;
+    const rating = p[`style_${s.key}_rating`] || 0;
+    const dim = leze ? '' : 'opacity:0.4;pointer-events:none;';
+    return `<tr>
+      <td style="padding:4px 8px 4px 0;font-size:13px;">${s.label}</td>
+      <td style="padding:4px 4px;text-align:center;">
+        <input type="checkbox" id="prof-style-${s.key}" ${leze?'checked':''} onchange="render()">
+      </td>
+      <td style="padding:4px 4px;${dim}">
+        ${renderStars('prof-style-'+s.key+'-rating', rating, '')}
+      </td>
+      <td style="padding:4px 4px;text-align:center;${dim}">
+        <input type="checkbox" id="prof-style-${s.key}-more" ${p['style_'+s.key+'_more']?'checked':''}>
+      </td>
+      <td style="padding:4px 4px;text-align:center;${dim}">
+        <input type="checkbox" id="prof-style-${s.key}-mentor" ${p['style_'+s.key+'_mentor']?'checked':''}>
+      </td>
+      <td style="padding:4px 4px;text-align:center;${dim}">
+        <input type="checkbox" id="prof-style-${s.key}-is-mentor" ${p['style_'+s.key+'_is_mentor']?'checked':''}>
+      </td>
+    </tr>`;
+  }).join('');
+
+  const safetyAreas = [
+    { key: 'basics',   label: 'Základní techniky' },
+    { key: 'pisek',    label: 'Pískařské techniky' },
+    { key: 'alpine-s', label: 'Letní hory' },
+    { key: 'alpine-w', label: 'Zimní hory' },
+    { key: 'rescue',   label: 'Záchrana v horách' },
+    { key: 'firstaid', label: 'První pomoc' },
+  ];
+
+  const safetyRows = safetyAreas.map(a => {
+    const dbKey = 'safety_' + a.key.replace('-', '_');
+    const val = p[dbKey] || 0;
+    return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+      <div style="width:150px;font-size:13px;">${a.label}</div>
+      ${renderStars('prof-safety-'+a.key, val, '')}
+    </div>`;
+  }).join('');
+
+  const ins = p.insurance || 'none';
+
+  return `
+    <div class="section-title" style="margin-top:24px;">👤 Můj profil</div>
+    <div class="profile-card">
+
+      <div class="prof-section">
+        <div class="prof-label">Osobní údaje</div>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Rodné číslo</label>
+          <input type="text" id="prof-birth-number" value="${escapeAttr(p.birth_number||'')}" placeholder="000000/0000" maxlength="11">
+        </div>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Telefon</label>
+          <input type="tel" id="prof-phone" value="${escapeAttr(p.phone||'')}" placeholder="+420 777 000 000" maxlength="20">
+        </div>
+        <label class="prof-checkbox-row">
+          <input type="checkbox" id="prof-is-student" ${p.is_student?'checked':''}>
+          <span>Student (zvýhodněný příspěvek 500 Kč)</span>
+        </label>
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Lezení</div>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Lezu od roku</label>
+          <input type="number" id="prof-year-started" value="${p.year_started||''}" placeholder="2018" min="1950" max="2100">
+        </div>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>O sobě (max 300 znaků)</label>
+          <textarea id="prof-bio" maxlength="300" placeholder="Pár slov o tom, jak lezeš nebo co hledáš v oddíle..." style="width:100%;min-height:70px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;font-size:13px;resize:vertical;">${escapeAttr(p.bio||'')}</textarea>
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Preferované lokality</label>
+          <input type="text" id="prof-preferred-areas" value="${escapeAttr(p.preferred_areas||'')}" placeholder="Labák, Adršpach, Jizerky…" maxlength="200">
+        </div>
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Pojištění a ČHS</div>
+        <label class="prof-checkbox-row" style="margin-bottom:8px;">
+          <input type="checkbox" id="prof-chs-member" ${p.chs_member?'checked':''}>
+          <span>Člen ČHS (Český horolezecký svaz)</span>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px;">
+          ${[
+            {val:'none',      label:'Žádné extra pojištění'},
+            {val:'chs_trio',  label:'ČHS Trio (úraz + odpovědnost + záchrana)'},
+            {val:'alpenverein',label:'Alpenverein (komplexní horské pojištění)'},
+          ].map(o => `<label class="radio-option${ins===o.val?' selected':''}"
+            onclick="document.querySelectorAll('.radio-option').forEach(r=>r.classList.remove('selected'));this.classList.add('selected')">
+            <input type="radio" name="prof-insurance" value="${o.val}" ${ins===o.val?'checked':''}>
+            ${o.label}
+          </label>`).join('')}
+        </div>
+        <div class="form-group" style="margin-bottom:0;">
+          <label>Číslo členství / pojistky</label>
+          <input type="text" id="prof-insurance-number" value="${escapeAttr(p.insurance_number||'')}" placeholder="Nepovinné" maxlength="50">
+        </div>
+      </div>
+
+      ${feeLine ? `<div class="prof-section">${feeLine}</div>` : ''}
+
+      <div class="prof-section">
+        <div class="prof-label">Jistění</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${[
+            {id:'prof-belay-tube',      key:'belay_tube',      label:'Kyblík (tube)'},
+            {id:'prof-belay-semi-auto', key:'belay_semi_auto', label:'Poloautomat'},
+            {id:'prof-belay-auto',      key:'belay_auto',      label:'Automat'},
+          ].map(o => `<label class="prof-checkbox-row">
+            <input type="checkbox" id="${o.id}" ${p[o.key]?'checked':''}>
+            <span>${o.label}</span>
+          </label>`).join('')}
+        </div>
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Lezu v přilbě</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          ${[
+            {id:'prof-helmet-never',     key:'helmet_never',     label:'Nikdy'},
+            {id:'prof-helmet-mountains', key:'helmet_mountains', label:'V horách'},
+            {id:'prof-helmet-pisek',     key:'helmet_pisek',     label:'Na písku'},
+            {id:'prof-helmet-sport',     key:'helmet_sport',     label:'Na sportovkách'},
+          ].map(o => `<label class="prof-checkbox-row">
+            <input type="checkbox" id="${o.id}" ${p[o.key]?'checked':''}>
+            <span>${o.label}</span>
+          </label>`).join('')}
+        </div>
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Kde lezu — styl a preference</div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;min-width:460px;">
+            <thead>
+              <tr style="font-size:11px;color:var(--ink-soft);border-bottom:1px solid var(--line);">
+                <th style="text-align:left;padding:4px 8px 6px 0;font-weight:600;">Styl</th>
+                <th style="padding:4px 4px 6px;font-weight:600;" title="Leze?">Leze?</th>
+                <th style="padding:4px 4px 6px;font-weight:600;">Preference (1–10)</th>
+                <th style="padding:4px 4px 6px;font-weight:600;" title="Chci víc">Víc</th>
+                <th style="padding:4px 4px 6px;font-weight:600;" title="Uvítám mentora">Mentor?</th>
+                <th style="padding:4px 4px 6px;font-weight:600;" title="Jsem mentor">Jsem mentor</th>
+              </tr>
+            </thead>
+            <tbody>${styleRows}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Obtížnost</div>
+        <input type="text" id="prof-grade" value="${escapeAttr(p.grade||'')}" placeholder="např. 7a sport, 7B boulder, WI4" maxlength="50">
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Celková úroveň (1–10)</div>
+        ${renderStars('prof-skill-rating', p.skill_rating||0, '')}
+      </div>
+
+      <div class="prof-section">
+        <div class="prof-label">Sebehodnocení znalostí bezpečnosti (1–10)</div>
+        ${safetyRows}
+      </div>
+
+      <button class="btn btn-primary" style="width:100%;margin-top:8px;" onclick="saveProfile()">
+        Uložit profil
+      </button>
     </div>
   `;
 }
@@ -6050,6 +6462,70 @@ function openMemberDetail(id) {
           `}
         </div>`;
     })() : ''}
+
+    ${(() => {
+      if (!state.profileReady) return '';
+      const mp = state.members.find(x => x.id === id);
+      // Načteme profil tohoto člena ze stavu (admin vidí jen svůj profil v state.profile)
+      // Admin vidí profily jen jako read-only – zobrazíme pokud je to přihlášený admin
+      // a jde o jeho vlastní profil, jinak jen info z members tabulky
+      const prof = (state.currentUserId === id) ? (state.profile || {}) : null;
+      if (!prof) return '';
+      const styles = [
+        { key: 'firstlead', label: 'Lezu jen na prvním' },
+        { key: 'toprope',   label: 'TOP rope' },
+        { key: 'pisek',     label: 'Písek' },
+        { key: 'boulder',   label: 'Boulder' },
+        { key: 'sport',     label: 'Sport' },
+        { key: 'multipitch', label: 'Vícedélky' },
+        { key: 'ice',       label: 'Ledy / mixy' },
+      ];
+      const styleLines = styles.filter(s => prof['style_'+s.key])
+        .map(s => {
+          const r = prof['style_'+s.key+'_rating'];
+          const extra = [
+            prof['style_'+s.key+'_more'] ? 'chci víc' : '',
+            prof['style_'+s.key+'_mentor'] ? 'hledám mentora' : '',
+            prof['style_'+s.key+'_is_mentor'] ? 'jsem mentor' : '',
+          ].filter(Boolean).join(', ');
+          return `<div style="font-size:13px;padding:2px 0;">${s.label}${r ? ` · ${r}/10` : ''}${extra ? ` · ${extra}` : ''}</div>`;
+        }).join('');
+      const belays = [
+        prof.belay_tube && 'Kyblík',
+        prof.belay_semi_auto && 'Poloautomat',
+        prof.belay_auto && 'Automat',
+      ].filter(Boolean).join(', ');
+      const helmets = [
+        prof.helmet_never && 'Nikdy',
+        prof.helmet_mountains && 'V horách',
+        prof.helmet_pisek && 'Na písku',
+        prof.helmet_sport && 'Na sportovkách',
+      ].filter(Boolean).join(', ');
+      const safetyParts = [
+        prof.safety_basics   && `Základní:${prof.safety_basics}/10`,
+        prof.safety_pisek    && `Písek:${prof.safety_pisek}/10`,
+        prof.safety_alpine_s && `Letní hory:${prof.safety_alpine_s}/10`,
+        prof.safety_alpine_w && `Zimní hory:${prof.safety_alpine_w}/10`,
+        prof.safety_rescue   && `Záchrana:${prof.safety_rescue}/10`,
+        prof.safety_firstaid && `První pomoc:${prof.safety_firstaid}/10`,
+      ].filter(Boolean).join(' · ');
+      return `
+        <div style="background:rgba(15,32,39,0.04);border-radius:10px;padding:12px 14px;margin:12px 0;">
+          <div style="font-size:13px;font-weight:700;margin-bottom:8px;">👤 Lezecký profil</div>
+          ${prof.birth_number ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:3px;">RČ: ${prof.birth_number}</div>` : ''}
+          ${prof.phone ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:3px;">Tel: ${prof.phone}</div>` : ''}
+          ${prof.is_student ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:3px;">Student ✓</div>` : ''}
+          ${prof.year_started ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:3px;">Lezu od: ${prof.year_started}</div>` : ''}
+          ${prof.bio ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">${escapeHtml(prof.bio)}</div>` : ''}
+          ${belays ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:3px;">Jistění: ${belays}</div>` : ''}
+          ${helmets ? `<div style="font-size:12px;color:var(--ink-soft);margin-bottom:6px;">Přilba: ${helmets}</div>` : ''}
+          ${styleLines ? `<div style="font-size:12px;font-weight:600;margin-bottom:4px;">Styl lezení:</div>${styleLines}` : ''}
+          ${prof.grade ? `<div style="font-size:12px;color:var(--ink-soft);margin-top:4px;">Obtížnost: ${escapeHtml(prof.grade)}</div>` : ''}
+          ${prof.skill_rating ? `<div style="font-size:12px;color:var(--ink-soft);">Celková úroveň: ${prof.skill_rating}/10</div>` : ''}
+          ${safetyParts ? `<div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Bezpečnost: ${safetyParts}</div>` : ''}
+          ${prof.updated_at ? `<div style="font-size:11px;color:var(--ink-soft);margin-top:6px;">Aktualizováno: ${new Date(prof.updated_at).toLocaleDateString('cs-CZ')}</div>` : ''}
+        </div>`;
+    })()}
 
     <div class="section-title" style="margin-top: 8px;">Historie (${history.length})</div>
     ${history.length === 0 ? `
