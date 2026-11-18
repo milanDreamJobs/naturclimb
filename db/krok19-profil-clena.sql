@@ -80,7 +80,6 @@ CREATE TABLE IF NOT EXISTS member_profiles (
   style_ice_is_mentor       boolean DEFAULT false,
 
   grade        text,
-  skill_rating smallint CHECK (skill_rating BETWEEN 1 AND 10),
 
   -- Sebehodnocení znalostí bezpečnosti (1-10)
   safety_basics   smallint CHECK (safety_basics BETWEEN 1 AND 10),
