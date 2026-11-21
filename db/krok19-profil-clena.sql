@@ -4,8 +4,13 @@
 -- Idempotentni - lze spustit opakovane (i kdyz uz starsi verze bezela).
 -- Predpoklad: bezel krok3 (funkce current_member_id() a is_club_admin()).
 
+-- !!! V Supabase SQL Editoru POUSTET VE DVOU KROCICH (dve samostatna query):
+-- !!!   CAST 1 = jen CREATE TABLE, CAST 2 = vse ostatni.
+-- !!! Kdyz je CREATE TABLE ve stejnem query jako dalsi prikazy, editor vklada
+-- !!! vlastni "ENABLE ROW LEVEL SECURITY" a nasledujici prikaz uskne.
+
 -- ============================================================
--- 1. Tabulka (prvni spusteni)
+-- CAST 1 / 1. Tabulka (prvni spusteni)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS public.member_profiles (
   id              text PRIMARY KEY REFERENCES public.members(id) ON DELETE CASCADE,
@@ -13,7 +18,7 @@ CREATE TABLE IF NOT EXISTS public.member_profiles (
 );
 
 -- ============================================================
--- 2. Sloupce - pridaji se jen ty, ktere chybi
+-- CAST 2 (samostatne query) / 2. Sloupce - pridaji se jen ty, ktere chybi
 --    (funguje stejne na prazdne tabulce i na starsi verzi krok19)
 --    Bez bloku DO a bez diakritiky - editor v Supabase jinak skript rozsekne.
 -- ============================================================
