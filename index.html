@@ -903,6 +903,8 @@
     text-transform: none; letter-spacing: 0;
   }
   .prof-help[aria-expanded="true"] { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .prof-style-table th .prof-help { margin: 3px 0 0; }
+  .prof-help-text + .prof-help-text, .prof-label + .prof-help-text { margin-bottom: 8px; }
   .prof-help-text {
     margin-top: 6px; padding: 8px 10px; border-radius: 8px;
     background: var(--primary-dim); color: var(--ink); font-size: 12.5px; line-height: 1.4;
@@ -3413,10 +3415,20 @@ function renderMemberProfile() {
 
         <div class="prof-section">
           <div class="prof-label">Kde lezu — styl a preference</div>
+          <div class="prof-help-text" id="prof-help-chci" hidden>
+            <b>Chci mentora:</b> bylo by fajn, aby se mnou někdo zkušenější či instruktor lezl či se mnou prošel metodiku.
+          </div>
+          <div class="prof-help-text" id="prof-help-jsem" hidden>
+            <b>Jsem mentor:</b> mám hodně zkušeností (9/10 ★) a rád někomu méně zkušenému pomohu, vysvětlím či s ním zalezu.
+          </div>
           <div class="prof-table-wrap">
             <table class="prof-style-table">
               <thead><tr>
-                <th>Styl</th><th>Lezu</th><th>Pref.</th><th>Chci<br>mentora</th><th>Jsem<br>mentor</th>
+                <th>Styl</th><th>Lezu</th><th>Preference</th>
+                <th>Chci<br>mentora<br><button type="button" class="prof-help" aria-expanded="false" aria-controls="prof-help-chci"
+                  aria-label="Co znamená Chci mentora" onclick="profilNapoveda(this,'chci')">?</button></th>
+                <th>Jsem<br>mentor<br><button type="button" class="prof-help" aria-expanded="false" aria-controls="prof-help-jsem"
+                  aria-label="Co znamená Jsem mentor" onclick="profilNapoveda(this,'jsem')">?</button></th>
               </tr></thead>
               <tbody>${styleRows}</tbody>
             </table>
