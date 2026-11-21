@@ -123,7 +123,9 @@ CREATE TRIGGER trg_member_profiles_updated_at
 -- ============================================================
 ALTER TABLE public.member_profiles ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON public.member_profiles FROM anon;
+-- Supabase dava 'authenticated' na nove tabulky vsechna prava vc. DELETE a TRUNCATE
+-- (TRUNCATE ignoruje RLS) - proto nejdriv vse odebrat a pak pridat jen potrebne.
+REVOKE ALL ON public.member_profiles FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE ON public.member_profiles TO authenticated;
 
 DROP POLICY IF EXISTS member_profiles_select_own ON public.member_profiles;
