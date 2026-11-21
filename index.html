@@ -961,6 +961,7 @@ const state = {
   clubProfiles: {},
   clubProfilesReady: false,
   krok21Ready: false,
+  krok22Ready: false,
   settleReady: false,
   currentUserId: null,
   currentView: 'member',
@@ -1249,6 +1250,12 @@ const PROFIL_BEZPECNOST = [
   { f: 'safety_rescue',   label: 'Záchrana v horách' },
   { f: 'safety_firstaid', label: 'První pomoc' },
 ];
+// Lékárnička – jedna volba (SQL krok 22)
+const PROFIL_LEKARNICKA = [
+  { val: 'never',     label: 'Nenosím' },
+  { val: 'mountains', label: 'Beru do hor' },
+  { val: 'always',    label: 'Mám vždy' },
+];
 const PROFIL_POJISTENI = [
   { val: 'none',        label: 'Žádné extra pojištění' },
   { val: 'chs_trio',    label: 'ČHS Trio (úraz + odpovědnost + záchrana)' },
@@ -1303,6 +1310,13 @@ async function loadProfile() {
   } else {
     const { error: eg } = await db.from('member_profiles').select('gdpr_consent,birth_date').limit(1);
     state.krok21Ready = !eg;
+  }
+  // Lékárnička (SQL krok 22) – stejně: bez sloupce se sekce neukáže ani neposílá.
+  if (data) {
+    state.krok22Ready = ('first_aid_kit' in data);
+  } else {
+    const { error: el } = await db.from('member_profiles').select('first_aid_kit').limit(1);
+    state.krok22Ready = !el;
   }
   // Rozpracované změny nepřepisujeme starší verzí z databáze.
   if (!profilStav.dirty && !profilStav.saving) state.profile = data || {};
@@ -1377,6 +1391,9 @@ function profilRadek() {
     row.birth_date = platneDatumNarozeni(p.birth_date);
     row.gdpr_consent = !!p.gdpr_consent;
     row.gdpr_consent_at = p.gdpr_consent ? (p.gdpr_consent_at || new Date().toISOString()) : null;
+  }
+  if (state.krok22Ready) {
+    row.first_aid_kit = PROFIL_LEKARNICKA.some(o => o.val === p.first_aid_kit) ? p.first_aid_kit : null;
   }
   return row;
 }
@@ -1510,6 +1527,17 @@ function profilGdpr(el) {
   p.gdpr_consent_at = el.checked ? new Date().toISOString() : null;
   const d = document.getElementById('prof-gdpr-date');
   if (d) d.textContent = el.checked ? 'Souhlas udělen ' + new Date(p.gdpr_consent_at).toLocaleDateString('cs-CZ') : '';
+  profilZmena();
+}
+// Jedna volba: klik vybere, klik na vybranou ji zruší.
+function profilLekarnicka(el) {
+  const p = profilPole();
+  p.first_aid_kit = (p.first_aid_kit === el.dataset.val) ? null : el.dataset.val;
+  el.parentElement.querySelectorAll('.prof-chip').forEach(c => {
+    const on = c.dataset.val === p.first_aid_kit;
+    c.classList.toggle('on', on);
+    c.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
   profilZmena();
 }
 function profilNapoveda(btn, id) {
@@ -3446,6 +3474,13 @@ function renderMemberProfile() {
           <div class="prof-label">Přilba</div>
           ${chips(PROFIL_PRILBA)}
         </div>
+        ${state.krok22Ready ? `
+        <div class="prof-section">
+          <div class="prof-label">Lékárnička</div>
+          <div class="prof-chips" role="radiogroup" aria-label="Lékárnička">${PROFIL_LEKARNICKA.map(o =>
+            `<button type="button" class="prof-chip${p.first_aid_kit === o.val ? ' on' : ''}" data-val="${o.val}" role="radio"
+              aria-checked="${p.first_aid_kit === o.val ? 'true' : 'false'}" onclick="profilLekarnicka(this)">${o.label}</button>`).join('')}</div>
+        </div>` : ''}
         <div class="prof-section">
           <div class="prof-label">Absolvované kurzy</div>
           ${chips(PROFIL_KURZY)}
@@ -3513,6 +3548,7 @@ function renderAdminProfil(id) {
       ${styly ? `<table>${styly}</table>` : ''}
       ${radek('Jistění', vyber(PROFIL_JISTENI))}
       ${radek('Přilba', vyber(PROFIL_PRILBA))}
+      ${radek('Lékárnička', (PROFIL_LEKARNICKA.find(o => o.val === prof.first_aid_kit) || {}).label || '')}
       ${radek('Kurzy', vyber(PROFIL_KURZY))}
       ${bezp ? `<div class="prof-ro-line" style="margin-top:4px;">Bezpečnost: ${bezp}</div>` : ''}
       ${prof.updated_at ? `<div class="prof-ro-line" style="margin-top:6px;">Aktualizováno: ${new Date(prof.updated_at).toLocaleDateString('cs-CZ')}</div>` : ''}
