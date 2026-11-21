@@ -1,11 +1,11 @@
 -- krok19-profil-clena.sql
--- Lezecký profil člena (tabulka member_profiles).
--- Bezpečná degradace: dokud tohle neběží, appka sekci Profil schová.
--- Idempotentní – lze spustit opakovaně (i když už starší verze běžela).
--- Předpoklad: běžel krok3 (funkce current_member_id() a is_club_admin()).
+-- Lezecky profil clena (tabulka member_profiles).
+-- Bezpecna degradace: dokud tohle nebezi, appka sekci Profil schova.
+-- Idempotentni - lze spustit opakovane (i kdyz uz starsi verze bezela).
+-- Predpoklad: bezel krok3 (funkce current_member_id() a is_club_admin()).
 
 -- ============================================================
--- 1. Tabulka (první spuštění)
+-- 1. Tabulka (prvni spusteni)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS public.member_profiles (
   id              text PRIMARY KEY REFERENCES public.members(id) ON DELETE CASCADE,
@@ -13,49 +13,49 @@ CREATE TABLE IF NOT EXISTS public.member_profiles (
 );
 
 -- ============================================================
--- 2. Sloupce – přidají se jen ty, které chybí
---    (funguje stejně na prázdné tabulce i na starší verzi krok19)
---    Schválně bez bloku DO s dolarovými uvozovkami – editor v Supabase ho rozbije.
+-- 2. Sloupce - pridaji se jen ty, ktere chybi
+--    (funguje stejne na prazdne tabulce i na starsi verzi krok19)
+--    Bez bloku DO a bez diakritiky - editor v Supabase jinak skript rozsekne.
 -- ============================================================
 ALTER TABLE public.member_profiles
-  -- Osobní údaje
+  -- Osobni udaje
   ADD COLUMN IF NOT EXISTS birth_number               text,
   ADD COLUMN IF NOT EXISTS phone                      text,
   ADD COLUMN IF NOT EXISTS is_student                 boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS is_chs_instructor          boolean DEFAULT false,
-  -- Základní info
+  -- Zakladni info
   ADD COLUMN IF NOT EXISTS year_started               int,
   ADD COLUMN IF NOT EXISTS bio                        text,
   ADD COLUMN IF NOT EXISTS preferred_areas            text,
-  -- ČHS a pojištění
+  -- CHS a pojisteni
   ADD COLUMN IF NOT EXISTS chs_member                 boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS insurance                  text DEFAULT 'none' CHECK (insurance IN ('none','chs_trio','alpenverein')),
-  -- Jistění
+  -- Jisteni
   ADD COLUMN IF NOT EXISTS belay_tube                 boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS belay_semi_auto            boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS belay_auto                 boolean DEFAULT false,
-  -- Přilba
+  -- Prilba
   ADD COLUMN IF NOT EXISTS helmet_never               boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS helmet_mountains           boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS helmet_pisek               boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS helmet_sport               boolean DEFAULT false,
-  -- Absolvované kurzy
+  -- Absolvovane kurzy
   ADD COLUMN IF NOT EXISTS course_zdravoveda          boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS course_metodika            boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS course_pady                boolean DEFAULT false,
-  -- Obtížnost – rozsah od/do
+  -- Obtiznost - rozsah od/do
   ADD COLUMN IF NOT EXISTS grade_uiaa_lo              text,
   ADD COLUMN IF NOT EXISTS grade_uiaa_hi              text,
   ADD COLUMN IF NOT EXISTS grade_sax_lo               text,
   ADD COLUMN IF NOT EXISTS grade_sax_hi               text,
-  -- Sebehodnocení bezpečnosti 1–10
+  -- Sebehodnoceni bezpecnosti 1-10
   ADD COLUMN IF NOT EXISTS safety_basics              smallint CHECK (safety_basics BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS safety_pisek               smallint CHECK (safety_pisek BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS safety_alpine_s            smallint CHECK (safety_alpine_s BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS safety_alpine_w            smallint CHECK (safety_alpine_w BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS safety_rescue              smallint CHECK (safety_rescue BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS safety_firstaid            smallint CHECK (safety_firstaid BETWEEN 1 AND 10),
-  -- Styly lezení: leze / preference 1–10 / chci mentora / jsem mentor
+  -- Styly lezeni: leze / preference 1-10 / chci mentora / jsem mentor
   ADD COLUMN IF NOT EXISTS style_firstlead            boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS style_firstlead_rating     smallint CHECK (style_firstlead_rating BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS style_firstlead_mentor     boolean DEFAULT false,
@@ -96,11 +96,11 @@ ALTER TABLE public.member_profiles
   ADD COLUMN IF NOT EXISTS style_bezky_rating         smallint CHECK (style_bezky_rating BETWEEN 1 AND 10),
   ADD COLUMN IF NOT EXISTS style_bezky_mentor         boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS style_bezky_is_mentor      boolean DEFAULT false,
-  -- Fotka (fáze 2)
+  -- Fotka (faze 2)
   ADD COLUMN IF NOT EXISTS avatar_url                 text;
 
 -- ============================================================
--- 3. updated_at se nastaví sám při každé změně
+-- 3. updated_at se nastavi sam pri kazde zmene
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.set_member_profile_updated_at()
 RETURNS trigger LANGUAGE plpgsql
@@ -113,8 +113,8 @@ CREATE TRIGGER trg_member_profiles_updated_at
 
 -- ============================================================
 -- 4. Pravidla (RLS)
---    Člen čte a píše jen svůj řádek, admin čte všechny.
---    Nikdo nemaže (řádek zmizí jen se smazáním člena).
+--    Clen cte a pise jen svuj radek, admin cte vsechny.
+--    Nikdo nemaze (radek zmizi jen se smazanim clena).
 -- ============================================================
 ALTER TABLE public.member_profiles ENABLE ROW LEVEL SECURITY;
 
@@ -138,8 +138,8 @@ CREATE POLICY member_profiles_update_own ON public.member_profiles
   WITH CHECK (id = public.current_member_id());
 
 -- ============================================================
--- 5. Kontrola – výsledek vlož zpět do chatu
---    Čekáme: sloupcu = 72, pravidla = 3, rls_zapnute = true
+-- 5. Kontrola - vysledek vloz zpet do chatu
+--    Cekame: sloupcu = 72, pravidla = 3, rls_zapnute = true
 -- ============================================================
 SELECT
   (SELECT count(*) FROM information_schema.columns
