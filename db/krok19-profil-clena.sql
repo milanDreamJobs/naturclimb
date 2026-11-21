@@ -1,149 +1,96 @@
 -- krok19-profil-clena.sql
--- Tabulka s lezeckým profilem každého člena.
--- Bezpečná degradace: pokud tabulka chybí, appka schová sekci Profil.
--- Idempotentní – lze spustit dvakrát bez chyby.
+-- Lezecký profil člena (tabulka member_profiles).
+-- Bezpečná degradace: dokud tohle neběží, appka sekci Profil schová.
+-- Idempotentní – lze spustit opakovaně (i když už starší verze běžela).
+-- Předpoklad: běžel krok3 (funkce current_member_id() a is_club_admin()).
 
 -- ============================================================
--- 1. Tabulka (CREATE IF NOT EXISTS – první spuštění)
+-- 1. Tabulka (první spuštění)
 -- ============================================================
-CREATE TABLE IF NOT EXISTS member_profiles (
-  id              text PRIMARY KEY REFERENCES members(id) ON DELETE CASCADE,
-  updated_at      timestamptz DEFAULT now(),
-
-  -- Kontaktní a osobní údaje
-  birth_number    text,
-  phone           text,
-  is_student      boolean DEFAULT false,
-
-  -- Základní info
-  year_started    int,
-  bio             text,
-  preferred_areas text,
-
-  -- Pojištění a ČHS
-  chs_member       boolean DEFAULT false,
-  insurance        text CHECK (insurance IN ('none','chs_trio','alpenverein')) DEFAULT 'none',
-
-  -- Jistění
-  belay_tube       boolean DEFAULT false,
-  belay_semi_auto  boolean DEFAULT false,
-  belay_auto       boolean DEFAULT false,
-
-  -- Lezu v přilbě
-  helmet_never     boolean DEFAULT false,
-  helmet_mountains boolean DEFAULT false,
-  helmet_pisek     boolean DEFAULT false,
-  helmet_sport     boolean DEFAULT false,
-
-  -- Styl lezení: leze / preference (1-10) / chci mentora / jsem mentor
-  style_firstlead           boolean DEFAULT false,
-  style_firstlead_rating    smallint CHECK (style_firstlead_rating BETWEEN 1 AND 10),
-  style_firstlead_mentor    boolean DEFAULT false,
-  style_firstlead_is_mentor boolean DEFAULT false,
-
-  style_toprope             boolean DEFAULT false,
-  style_toprope_rating      smallint CHECK (style_toprope_rating BETWEEN 1 AND 10),
-  style_toprope_mentor      boolean DEFAULT false,
-  style_toprope_is_mentor   boolean DEFAULT false,
-
-  style_pisek               boolean DEFAULT false,
-  style_pisek_rating        smallint CHECK (style_pisek_rating BETWEEN 1 AND 10),
-  style_pisek_mentor        boolean DEFAULT false,
-  style_pisek_is_mentor     boolean DEFAULT false,
-
-  style_boulder             boolean DEFAULT false,
-  style_boulder_rating      smallint CHECK (style_boulder_rating BETWEEN 1 AND 10),
-  style_boulder_mentor      boolean DEFAULT false,
-  style_boulder_is_mentor   boolean DEFAULT false,
-
-  style_sport               boolean DEFAULT false,
-  style_sport_rating        smallint CHECK (style_sport_rating BETWEEN 1 AND 10),
-  style_sport_mentor        boolean DEFAULT false,
-  style_sport_is_mentor     boolean DEFAULT false,
-
-  style_multipitch           boolean DEFAULT false,
-  style_multipitch_rating    smallint CHECK (style_multipitch_rating BETWEEN 1 AND 10),
-  style_multipitch_mentor    boolean DEFAULT false,
-  style_multipitch_is_mentor boolean DEFAULT false,
-
-  style_ice                 boolean DEFAULT false,
-  style_ice_rating          smallint CHECK (style_ice_rating BETWEEN 1 AND 10),
-  style_ice_mentor          boolean DEFAULT false,
-  style_ice_is_mentor       boolean DEFAULT false,
-
-  style_skialpy             boolean DEFAULT false,
-  style_skialpy_rating      smallint CHECK (style_skialpy_rating BETWEEN 1 AND 10),
-  style_skialpy_mentor      boolean DEFAULT false,
-  style_skialpy_is_mentor   boolean DEFAULT false,
-
-  style_bezky               boolean DEFAULT false,
-  style_bezky_rating        smallint CHECK (style_bezky_rating BETWEEN 1 AND 10),
-  style_bezky_mentor        boolean DEFAULT false,
-  style_bezky_is_mentor     boolean DEFAULT false,
-
-  -- Obtížnost — thermometry range (lo/hi)
-  grade_uiaa_lo text,
-  grade_uiaa_hi text,
-  grade_sax_lo  text,
-  grade_sax_hi  text,
-
-  -- Sebehodnocení znalostí bezpečnosti (1-10)
-  safety_basics   smallint CHECK (safety_basics BETWEEN 1 AND 10),
-  safety_pisek    smallint CHECK (safety_pisek BETWEEN 1 AND 10),
-  safety_alpine_s smallint CHECK (safety_alpine_s BETWEEN 1 AND 10),
-  safety_alpine_w smallint CHECK (safety_alpine_w BETWEEN 1 AND 10),
-  safety_rescue   smallint CHECK (safety_rescue BETWEEN 1 AND 10),
-  safety_firstaid smallint CHECK (safety_firstaid BETWEEN 1 AND 10),
-
-  avatar_url text
+CREATE TABLE IF NOT EXISTS public.member_profiles (
+  id              text PRIMARY KEY REFERENCES public.members(id) ON DELETE CASCADE,
+  updated_at      timestamptz DEFAULT now()
 );
 
 -- ============================================================
--- 1b. ALTER TABLE — idempotentní přidání nových sloupců
+-- 2. Sloupce – přidají se jen ty, které chybí
+--    (funguje stejně na prázdné tabulce i na starší verzi krok19)
 -- ============================================================
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_skialpy') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_skialpy boolean DEFAULT false;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_skialpy_rating') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_skialpy_rating smallint CHECK (style_skialpy_rating BETWEEN 1 AND 10);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_skialpy_mentor') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_skialpy_mentor boolean DEFAULT false;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_skialpy_is_mentor') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_skialpy_is_mentor boolean DEFAULT false;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_bezky') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_bezky boolean DEFAULT false;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_bezky_rating') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_bezky_rating smallint CHECK (style_bezky_rating BETWEEN 1 AND 10);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_bezky_mentor') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_bezky_mentor boolean DEFAULT false;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='style_bezky_is_mentor') THEN
-    ALTER TABLE member_profiles ADD COLUMN style_bezky_is_mentor boolean DEFAULT false;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='grade_uiaa_lo') THEN
-    ALTER TABLE member_profiles ADD COLUMN grade_uiaa_lo text;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='grade_uiaa_hi') THEN
-    ALTER TABLE member_profiles ADD COLUMN grade_uiaa_hi text;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='grade_sax_lo') THEN
-    ALTER TABLE member_profiles ADD COLUMN grade_sax_lo text;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_profiles' AND column_name='grade_sax_hi') THEN
-    ALTER TABLE member_profiles ADD COLUMN grade_sax_hi text;
-  END IF;
+DO $$
+DECLARE
+  sloupce text[][] := ARRAY[
+    -- Osobní údaje
+    ['birth_number',      'text'],
+    ['phone',             'text'],
+    ['is_student',        'boolean DEFAULT false'],
+    ['is_chs_instructor', 'boolean DEFAULT false'],
+    -- Základní info
+    ['year_started',      'int'],
+    ['bio',               'text'],
+    ['preferred_areas',   'text'],
+    -- ČHS a pojištění
+    ['chs_member',        'boolean DEFAULT false'],
+    ['insurance',         'text DEFAULT ''none'' CHECK (insurance IN (''none'',''chs_trio'',''alpenverein''))'],
+    -- Jistění
+    ['belay_tube',        'boolean DEFAULT false'],
+    ['belay_semi_auto',   'boolean DEFAULT false'],
+    ['belay_auto',        'boolean DEFAULT false'],
+    -- Přilba
+    ['helmet_never',      'boolean DEFAULT false'],
+    ['helmet_mountains',  'boolean DEFAULT false'],
+    ['helmet_pisek',      'boolean DEFAULT false'],
+    ['helmet_sport',      'boolean DEFAULT false'],
+    -- Absolvované kurzy
+    ['course_zdravoveda', 'boolean DEFAULT false'],
+    ['course_metodika',   'boolean DEFAULT false'],
+    ['course_pady',       'boolean DEFAULT false'],
+    -- Obtížnost – rozsah od/do
+    ['grade_uiaa_lo',     'text'],
+    ['grade_uiaa_hi',     'text'],
+    ['grade_sax_lo',      'text'],
+    ['grade_sax_hi',      'text'],
+    -- Sebehodnocení bezpečnosti 1–10
+    ['safety_basics',     'smallint CHECK (safety_basics BETWEEN 1 AND 10)'],
+    ['safety_pisek',      'smallint CHECK (safety_pisek BETWEEN 1 AND 10)'],
+    ['safety_alpine_s',   'smallint CHECK (safety_alpine_s BETWEEN 1 AND 10)'],
+    ['safety_alpine_w',   'smallint CHECK (safety_alpine_w BETWEEN 1 AND 10)'],
+    ['safety_rescue',     'smallint CHECK (safety_rescue BETWEEN 1 AND 10)'],
+    ['safety_firstaid',   'smallint CHECK (safety_firstaid BETWEEN 1 AND 10)'],
+    -- Fotka (fáze 2)
+    ['avatar_url',        'text']
+  ];
+  styly text[] := ARRAY['firstlead','toprope','pisek','boulder','sport',
+                        'multipitch','stena','ice','skialpy','bezky'];
+  s text;
+  i int;
+BEGIN
+  -- Styly lezení: leze / preference 1–10 / chci mentora / jsem mentor
+  FOREACH s IN ARRAY styly LOOP
+    sloupce := sloupce || ARRAY[
+      ['style_' || s,                'boolean DEFAULT false'],
+      ['style_' || s || '_rating',   format('smallint CHECK (%I BETWEEN 1 AND 10)', 'style_' || s || '_rating')],
+      ['style_' || s || '_mentor',   'boolean DEFAULT false'],
+      ['style_' || s || '_is_mentor','boolean DEFAULT false']
+    ];
+  END LOOP;
+
+  FOR i IN 1 .. array_length(sloupce, 1) LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'member_profiles'
+         AND column_name = sloupce[i][1]
+    ) THEN
+      EXECUTE format('ALTER TABLE public.member_profiles ADD COLUMN %I %s',
+                     sloupce[i][1], sloupce[i][2]);
+      RAISE NOTICE 'pridan sloupec %', sloupce[i][1];
+    END IF;
+  END LOOP;
 END $$;
 
 -- ============================================================
--- 2. Trigger: updated_at automaticky
+-- 3. updated_at se nastaví sám při každé změně
 -- ============================================================
-CREATE OR REPLACE FUNCTION set_member_profile_updated_at()
+CREATE OR REPLACE FUNCTION public.set_member_profile_updated_at()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   NEW.updated_at := now();
@@ -151,32 +98,56 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS trg_member_profiles_updated_at ON member_profiles;
+DROP TRIGGER IF EXISTS trg_member_profiles_updated_at ON public.member_profiles;
 CREATE TRIGGER trg_member_profiles_updated_at
-  BEFORE UPDATE ON member_profiles
-  FOR EACH ROW EXECUTE FUNCTION set_member_profile_updated_at();
+  BEFORE INSERT OR UPDATE ON public.member_profiles
+  FOR EACH ROW EXECUTE FUNCTION public.set_member_profile_updated_at();
 
 -- ============================================================
--- 3. RLS
+-- 4. Pravidla (RLS)
+--    Člen čte a píše jen svůj řádek, admin čte všechny.
+--    Nikdo nemaže (řádek zmizí jen se smazáním člena).
 -- ============================================================
-ALTER TABLE member_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.member_profiles ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS member_profiles_select_own ON member_profiles;
-CREATE POLICY member_profiles_select_own ON member_profiles
-  FOR SELECT USING (
-    id = (SELECT id FROM members WHERE email = auth.email())
-    OR
-    EXISTS (SELECT 1 FROM members WHERE email = auth.email() AND is_admin = true)
-  );
+REVOKE ALL ON public.member_profiles FROM anon;
+GRANT SELECT, INSERT, UPDATE ON public.member_profiles TO authenticated;
 
-DROP POLICY IF EXISTS member_profiles_insert_own ON member_profiles;
-CREATE POLICY member_profiles_insert_own ON member_profiles
-  FOR INSERT WITH CHECK (
-    id = (SELECT id FROM members WHERE email = auth.email())
-  );
+DROP POLICY IF EXISTS member_profiles_select_own ON public.member_profiles;
+CREATE POLICY member_profiles_select_own ON public.member_profiles
+  FOR SELECT TO authenticated
+  USING (id = public.current_member_id() OR public.is_club_admin());
 
-DROP POLICY IF EXISTS member_profiles_update_own ON member_profiles;
-CREATE POLICY member_profiles_update_own ON member_profiles
-  FOR UPDATE USING (
-    id = (SELECT id FROM members WHERE email = auth.email())
-  );
+DROP POLICY IF EXISTS member_profiles_insert_own ON public.member_profiles;
+CREATE POLICY member_profiles_insert_own ON public.member_profiles
+  FOR INSERT TO authenticated
+  WITH CHECK (id = public.current_member_id());
+
+DROP POLICY IF EXISTS member_profiles_update_own ON public.member_profiles;
+CREATE POLICY member_profiles_update_own ON public.member_profiles
+  FOR UPDATE TO authenticated
+  USING (id = public.current_member_id())
+  WITH CHECK (id = public.current_member_id());
+
+-- ============================================================
+-- 5. Kontrola – výsledek vlož zpět do chatu
+--    Čekáme: sloupcu = 72, pravidla = 3, rls_zapnute = true
+-- ============================================================
+SELECT
+  (SELECT count(*) FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'member_profiles'
+       AND column_name IN (
+         'id','updated_at','birth_number','phone','is_student','is_chs_instructor',
+         'year_started','bio','preferred_areas','chs_member','insurance',
+         'belay_tube','belay_semi_auto','belay_auto',
+         'helmet_never','helmet_mountains','helmet_pisek','helmet_sport',
+         'course_zdravoveda','course_metodika','course_pady',
+         'grade_uiaa_lo','grade_uiaa_hi','grade_sax_lo','grade_sax_hi',
+         'safety_basics','safety_pisek','safety_alpine_s','safety_alpine_w',
+         'safety_rescue','safety_firstaid','avatar_url')
+       OR (table_schema = 'public' AND table_name = 'member_profiles'
+           AND column_name ~ '^style_(firstlead|toprope|pisek|boulder|sport|multipitch|stena|ice|skialpy|bezky)(_rating|_mentor|_is_mentor)?$')
+  ) AS sloupcu,
+  (SELECT count(*) FROM pg_policies
+     WHERE schemaname = 'public' AND tablename = 'member_profiles') AS pravidla,
+  (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.member_profiles'::regclass) AS rls_zapnute;
