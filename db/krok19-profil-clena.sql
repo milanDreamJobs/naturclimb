@@ -15,88 +15,96 @@ CREATE TABLE IF NOT EXISTS public.member_profiles (
 -- ============================================================
 -- 2. Sloupce – přidají se jen ty, které chybí
 --    (funguje stejně na prázdné tabulce i na starší verzi krok19)
+--    Schválně bez bloku DO s dolarovými uvozovkami – editor v Supabase ho rozbije.
 -- ============================================================
-DO $$
-DECLARE
-  sloupce text[][] := ARRAY[
-    -- Osobní údaje
-    ['birth_number',      'text'],
-    ['phone',             'text'],
-    ['is_student',        'boolean DEFAULT false'],
-    ['is_chs_instructor', 'boolean DEFAULT false'],
-    -- Základní info
-    ['year_started',      'int'],
-    ['bio',               'text'],
-    ['preferred_areas',   'text'],
-    -- ČHS a pojištění
-    ['chs_member',        'boolean DEFAULT false'],
-    ['insurance',         'text DEFAULT ''none'' CHECK (insurance IN (''none'',''chs_trio'',''alpenverein''))'],
-    -- Jistění
-    ['belay_tube',        'boolean DEFAULT false'],
-    ['belay_semi_auto',   'boolean DEFAULT false'],
-    ['belay_auto',        'boolean DEFAULT false'],
-    -- Přilba
-    ['helmet_never',      'boolean DEFAULT false'],
-    ['helmet_mountains',  'boolean DEFAULT false'],
-    ['helmet_pisek',      'boolean DEFAULT false'],
-    ['helmet_sport',      'boolean DEFAULT false'],
-    -- Absolvované kurzy
-    ['course_zdravoveda', 'boolean DEFAULT false'],
-    ['course_metodika',   'boolean DEFAULT false'],
-    ['course_pady',       'boolean DEFAULT false'],
-    -- Obtížnost – rozsah od/do
-    ['grade_uiaa_lo',     'text'],
-    ['grade_uiaa_hi',     'text'],
-    ['grade_sax_lo',      'text'],
-    ['grade_sax_hi',      'text'],
-    -- Sebehodnocení bezpečnosti 1–10
-    ['safety_basics',     'smallint CHECK (safety_basics BETWEEN 1 AND 10)'],
-    ['safety_pisek',      'smallint CHECK (safety_pisek BETWEEN 1 AND 10)'],
-    ['safety_alpine_s',   'smallint CHECK (safety_alpine_s BETWEEN 1 AND 10)'],
-    ['safety_alpine_w',   'smallint CHECK (safety_alpine_w BETWEEN 1 AND 10)'],
-    ['safety_rescue',     'smallint CHECK (safety_rescue BETWEEN 1 AND 10)'],
-    ['safety_firstaid',   'smallint CHECK (safety_firstaid BETWEEN 1 AND 10)'],
-    -- Fotka (fáze 2)
-    ['avatar_url',        'text']
-  ];
-  styly text[] := ARRAY['firstlead','toprope','pisek','boulder','sport',
-                        'multipitch','stena','ice','skialpy','bezky'];
-  s text;
-  i int;
-BEGIN
+ALTER TABLE public.member_profiles
+  -- Osobní údaje
+  ADD COLUMN IF NOT EXISTS birth_number               text,
+  ADD COLUMN IF NOT EXISTS phone                      text,
+  ADD COLUMN IF NOT EXISTS is_student                 boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS is_chs_instructor          boolean DEFAULT false,
+  -- Základní info
+  ADD COLUMN IF NOT EXISTS year_started               int,
+  ADD COLUMN IF NOT EXISTS bio                        text,
+  ADD COLUMN IF NOT EXISTS preferred_areas            text,
+  -- ČHS a pojištění
+  ADD COLUMN IF NOT EXISTS chs_member                 boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS insurance                  text DEFAULT 'none' CHECK (insurance IN ('none','chs_trio','alpenverein')),
+  -- Jistění
+  ADD COLUMN IF NOT EXISTS belay_tube                 boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS belay_semi_auto            boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS belay_auto                 boolean DEFAULT false,
+  -- Přilba
+  ADD COLUMN IF NOT EXISTS helmet_never               boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS helmet_mountains           boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS helmet_pisek               boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS helmet_sport               boolean DEFAULT false,
+  -- Absolvované kurzy
+  ADD COLUMN IF NOT EXISTS course_zdravoveda          boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS course_metodika            boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS course_pady                boolean DEFAULT false,
+  -- Obtížnost – rozsah od/do
+  ADD COLUMN IF NOT EXISTS grade_uiaa_lo              text,
+  ADD COLUMN IF NOT EXISTS grade_uiaa_hi              text,
+  ADD COLUMN IF NOT EXISTS grade_sax_lo               text,
+  ADD COLUMN IF NOT EXISTS grade_sax_hi               text,
+  -- Sebehodnocení bezpečnosti 1–10
+  ADD COLUMN IF NOT EXISTS safety_basics              smallint CHECK (safety_basics BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS safety_pisek               smallint CHECK (safety_pisek BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS safety_alpine_s            smallint CHECK (safety_alpine_s BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS safety_alpine_w            smallint CHECK (safety_alpine_w BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS safety_rescue              smallint CHECK (safety_rescue BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS safety_firstaid            smallint CHECK (safety_firstaid BETWEEN 1 AND 10),
   -- Styly lezení: leze / preference 1–10 / chci mentora / jsem mentor
-  FOREACH s IN ARRAY styly LOOP
-    sloupce := sloupce || ARRAY[
-      ['style_' || s,                'boolean DEFAULT false'],
-      ['style_' || s || '_rating',   format('smallint CHECK (%I BETWEEN 1 AND 10)', 'style_' || s || '_rating')],
-      ['style_' || s || '_mentor',   'boolean DEFAULT false'],
-      ['style_' || s || '_is_mentor','boolean DEFAULT false']
-    ];
-  END LOOP;
-
-  FOR i IN 1 .. array_length(sloupce, 1) LOOP
-    IF NOT EXISTS (
-      SELECT 1 FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = 'member_profiles'
-         AND column_name = sloupce[i][1]
-    ) THEN
-      EXECUTE format('ALTER TABLE public.member_profiles ADD COLUMN %I %s',
-                     sloupce[i][1], sloupce[i][2]);
-      RAISE NOTICE 'pridan sloupec %', sloupce[i][1];
-    END IF;
-  END LOOP;
-END $$;
+  ADD COLUMN IF NOT EXISTS style_firstlead            boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_firstlead_rating     smallint CHECK (style_firstlead_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_firstlead_mentor     boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_firstlead_is_mentor  boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_toprope              boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_toprope_rating       smallint CHECK (style_toprope_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_toprope_mentor       boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_toprope_is_mentor    boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_pisek                boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_pisek_rating         smallint CHECK (style_pisek_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_pisek_mentor         boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_pisek_is_mentor      boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_boulder              boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_boulder_rating       smallint CHECK (style_boulder_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_boulder_mentor       boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_boulder_is_mentor    boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_sport                boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_sport_rating         smallint CHECK (style_sport_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_sport_mentor         boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_sport_is_mentor      boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_multipitch           boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_multipitch_rating    smallint CHECK (style_multipitch_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_multipitch_mentor    boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_multipitch_is_mentor boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_stena                boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_stena_rating         smallint CHECK (style_stena_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_stena_mentor         boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_stena_is_mentor      boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_ice                  boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_ice_rating           smallint CHECK (style_ice_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_ice_mentor           boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_ice_is_mentor        boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_skialpy              boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_skialpy_rating       smallint CHECK (style_skialpy_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_skialpy_mentor       boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_skialpy_is_mentor    boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_bezky                boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_bezky_rating         smallint CHECK (style_bezky_rating BETWEEN 1 AND 10),
+  ADD COLUMN IF NOT EXISTS style_bezky_mentor         boolean DEFAULT false,
+  ADD COLUMN IF NOT EXISTS style_bezky_is_mentor      boolean DEFAULT false,
+  -- Fotka (fáze 2)
+  ADD COLUMN IF NOT EXISTS avatar_url                 text;
 
 -- ============================================================
 -- 3. updated_at se nastaví sám při každé změně
 -- ============================================================
 CREATE OR REPLACE FUNCTION public.set_member_profile_updated_at()
-RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  NEW.updated_at := now();
-  RETURN NEW;
-END;
-$$;
+RETURNS trigger LANGUAGE plpgsql
+AS 'BEGIN NEW.updated_at := now(); RETURN NEW; END;';
 
 DROP TRIGGER IF EXISTS trg_member_profiles_updated_at ON public.member_profiles;
 CREATE TRIGGER trg_member_profiles_updated_at
