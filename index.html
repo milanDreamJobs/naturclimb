@@ -796,19 +796,23 @@
   .prof-chip:hover:not(.on) { border-color: var(--primary); color: var(--primary); }
   .prof-chip.on { background: var(--primary); border-color: var(--primary); color: #fff; }
   .prof-star {
-    font-size: 17px; color: #cfd6da; cursor: pointer; line-height: 1;
+    font-size: 24px; color: #9aa7ad; cursor: pointer; line-height: 1;
     user-select: none; transition: color .1s;
   }
   .prof-star.active { color: var(--accent); }
-  .prof-stars { display: flex; gap: 1px; align-items: center; flex-wrap: nowrap; }
+  /* Nezakliknuta hvezda = prazdna s cernym ramenem, zakliknuta = oranzova */
+  @supports (-webkit-text-stroke: 1px black) {
+    .prof-star { color: #fff; -webkit-text-stroke: 1.3px var(--ink); }
+    .prof-star.active { color: var(--accent); -webkit-text-stroke: 1.3px #9a4f0c; }
+  }
+  .prof-stars { display: flex; gap: 3px; align-items: center; flex-wrap: nowrap; }
   .prof-stars-val { font-size: 11px; font-weight: 600; color: var(--ink-soft); min-width: 30px; text-align: right; margin-left: 4px; }
   .prof-safety-row {
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-    padding: 7px 0; border-bottom: 1px solid var(--line);
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+    padding: 8px 0; border-bottom: 1px solid var(--line);
   }
   .prof-safety-row:last-child { border-bottom: none; }
   .prof-safety-name { font-size: 13px; min-width: 0; }
-  .prof-safety-row .prof-star { font-size: 14px; }
   .prof-table-wrap { overflow-x: auto; margin: 0 -2px; }
   .prof-style-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   .prof-style-table th {
@@ -821,8 +825,9 @@
   .prof-style-table tr:last-child td { border-bottom: none; }
   .prof-style-table td:first-child { white-space: nowrap; }
   .prof-style-table input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
-  .prof-style-table .prof-star { font-size: 10px; }
-  .prof-style-table .prof-stars { gap: 0; }
+  .prof-style-table .prof-star { font-size: 15px; }
+  .prof-style-table .prof-stars { display: grid; grid-template-columns: repeat(5, auto); gap: 1px 2px; justify-content: center; }
+  .prof-style-table .prof-star { -webkit-text-stroke-width: 1px; }
   .prof-style-table tr.inactive td:nth-child(n+3) { opacity: .28; pointer-events: none; }
   .prof-therm { margin-bottom: 16px; }
   .prof-therm-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
@@ -889,6 +894,20 @@
   .clen-name { font-family: 'Bricolage Grotesque', sans-serif; font-size: 15px; font-weight: 700; }
   .clen-sub { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
   .clen-empty { text-align: center; color: white; text-shadow: 0 2px 6px rgba(0,0,0,.5); font-size: 14px; padding: 16px 0; }
+  .prof-help {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; margin-left: 4px; vertical-align: middle;
+    border-radius: 50%; border: 1.5px solid var(--ink-soft); background: var(--paper);
+    color: var(--ink-soft); font-size: 11px; font-weight: 700; cursor: pointer; padding: 0;
+    text-transform: none; letter-spacing: 0;
+  }
+  .prof-help[aria-expanded="true"] { background: var(--primary); border-color: var(--primary); color: #fff; }
+  .prof-help-text {
+    margin-top: 6px; padding: 8px 10px; border-radius: 8px;
+    background: var(--primary-dim); color: var(--ink); font-size: 12.5px; line-height: 1.4;
+  }
+  .prof-gdpr { margin-top: 4px; }
+  .prof-gdpr-date { font-size: 11.5px; color: var(--ink-soft); margin-left: 25px; }
   /* ===== /MEMBER PROFILE ===== */
 </style>
 </head>
@@ -938,6 +957,7 @@ const state = {
   profilesById: {},
   clubProfiles: {},
   clubProfilesReady: false,
+  gdprReady: false,
   settleReady: false,
   currentUserId: null,
   currentView: 'member',
@@ -1273,6 +1293,14 @@ async function loadProfile() {
     return;
   }
   state.profileReady = true;
+  // Souhlas s GDPR (SQL krok 21): dokud sloupce nejsou, checkbox se neukáže
+  // a do databáze se neposílá – jinak by selhalo celé ukládání profilu.
+  if (data) {
+    state.gdprReady = ('gdpr_consent' in data);
+  } else {
+    const { error: eg } = await db.from('member_profiles').select('gdpr_consent').limit(1);
+    state.gdprReady = !eg;
+  }
   // Rozpracované změny nepřepisujeme starší verzí z databáze.
   if (!profilStav.dirty && !profilStav.saving) state.profile = data || {};
 
@@ -1342,6 +1370,10 @@ function profilRadek() {
     }
     row[k] = v;
   });
+  if (state.gdprReady) {
+    row.gdpr_consent = !!p.gdpr_consent;
+    row.gdpr_consent_at = p.gdpr_consent ? (p.gdpr_consent_at || new Date().toISOString()) : null;
+  }
   return row;
 }
 
@@ -1455,6 +1487,20 @@ function profilHvezda(el, f, n) {
     if (lab) lab.textContent = nova ? nova + '/10' : '';
   }
   profilZmena();
+}
+function profilGdpr(el) {
+  const p = profilPole();
+  p.gdpr_consent = el.checked;
+  p.gdpr_consent_at = el.checked ? new Date().toISOString() : null;
+  const d = document.getElementById('prof-gdpr-date');
+  if (d) d.textContent = el.checked ? 'Souhlas udělen ' + new Date(p.gdpr_consent_at).toLocaleDateString('cs-CZ') : '';
+  profilZmena();
+}
+function profilNapoveda(btn, id) {
+  const box = document.getElementById('prof-help-' + id);
+  if (!box) return;
+  box.hidden = !box.hidden;
+  btn.setAttribute('aria-expanded', box.hidden ? 'false' : 'true');
 }
 function profilTab(id) {
   state.ui.profileTab = id;
@@ -3280,7 +3326,8 @@ function renderMemberProfile() {
           <div class="prof-label">Osobní údaje</div>
           <div class="prof-row">
             <div class="prof-field">
-              <label for="prof-birth-number">Rodné číslo</label>
+              <label for="prof-birth-number">Rodné číslo<button type="button" class="prof-help" aria-expanded="false"
+                aria-controls="prof-help-rc" aria-label="K čemu je rodné číslo" onclick="profilNapoveda(this,'rc')">?</button></label>
               <input type="text" id="prof-birth-number" data-f="birth_number" value="${a(p.birth_number)}"
                 placeholder="000000/0000" maxlength="11" inputmode="numeric" oninput="profilVstup(this)">
             </div>
@@ -3290,6 +3337,16 @@ function renderMemberProfile() {
                 placeholder="+420 777 000 000" maxlength="20" oninput="profilVstup(this)">
             </div>
           </div>
+          <div class="prof-help-text" id="prof-help-rc" hidden>
+            Rodné číslo vidíš jen ty a admin oddílu – ostatní členové ho neuvidí.
+            Je nutné pro evidenci členů kvůli VSK.
+          </div>
+          ${state.gdprReady ? `
+          <div class="prof-gdpr">
+            <label class="prof-checkbox-row"><input type="checkbox" id="prof-gdpr" ${p.gdpr_consent ? 'checked' : ''}
+              onchange="profilGdpr(this)"> Souhlasím s evidencí osobních údajů dle GDPR</label>
+            <div class="prof-gdpr-date" id="prof-gdpr-date">${p.gdpr_consent && p.gdpr_consent_at ? 'Souhlas udělen ' + new Date(p.gdpr_consent_at).toLocaleDateString('cs-CZ') : ''}</div>
+          </div>` : ''}
         </div>
 
         <div class="prof-section">
@@ -3417,6 +3474,8 @@ function renderAdminProfil(id) {
       <div class="prof-ro-title">👤 Lezecký profil</div>
       ${badges.length ? `<div class="prof-ro-badges">${badges.map(b => `<span class="prof-ro-badge">${b}</span>`).join('')}</div>` : ''}
       ${jeAdmin ? radek('RČ', h(prof.birth_number)) : ''}
+      ${jeAdmin && ('gdpr_consent' in prof) ? radek('Souhlas GDPR', prof.gdpr_consent
+        ? 'ano' + (prof.gdpr_consent_at ? ' (' + new Date(prof.gdpr_consent_at).toLocaleDateString('cs-CZ') + ')' : '') : 'ne') : ''}
       ${radek('Tel', h(prof.phone))}
       ${radek('Pojištění', prof.insurance && prof.insurance !== 'none' ? pojisteni : '')}
       ${radek('Lezu od', h(prof.year_started))}
