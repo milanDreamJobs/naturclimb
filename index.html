@@ -763,12 +763,13 @@
     text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px;
   }
   .prof-field input[type=text], .prof-field input[type=tel],
-  .prof-field input[type=number], .prof-field textarea {
+  .prof-field input[type=number], .prof-field input[type=date], .prof-field textarea {
     width: 100%; padding: 9px 11px; border: 1.5px solid var(--line); border-radius: 10px;
     background: var(--paper); font-family: inherit; font-size: 15px; color: var(--ink);
   }
   .prof-field input:focus, .prof-field textarea:focus { outline: none; border-color: var(--primary); }
   .prof-field textarea { min-height: 64px; resize: vertical; }
+  .prof-field input[type=date] { min-height: 42px; -webkit-appearance: none; appearance: none; }
   .prof-row { display: flex; gap: 10px; flex-wrap: wrap; }
   .prof-row > .prof-field { flex: 1 1 130px; }
   .prof-checkbox-row {
@@ -957,7 +958,7 @@ const state = {
   profilesById: {},
   clubProfiles: {},
   clubProfilesReady: false,
-  gdprReady: false,
+  krok21Ready: false,
   settleReady: false,
   currentUserId: null,
   currentView: 'member',
@@ -1266,9 +1267,9 @@ const PROFIL_TEPLOMERY = {
 };
 
 // Jen tyhle sloupce se posílají do databáze – nic jiného z state.profile.
-const PROFIL_TEXT = { birth_number: 11, phone: 20, bio: 300, preferred_areas: 200 };
+const PROFIL_TEXT = { phone: 20, bio: 300, preferred_areas: 200 };
 const PROFIL_SLOUPCE = (() => {
-  const s = ['birth_number','phone','is_student','is_chs_instructor','year_started','bio',
+  const s = ['phone','is_student','is_chs_instructor','year_started','bio',
     'preferred_areas','chs_member','insurance',
     'grade_uiaa_lo','grade_uiaa_hi','grade_sax_lo','grade_sax_hi'];
   [PROFIL_JISTENI, PROFIL_PRILBA, PROFIL_KURZY, PROFIL_BEZPECNOST].forEach(sk => sk.forEach(o => s.push(o.f)));
@@ -1293,18 +1294,18 @@ async function loadProfile() {
     return;
   }
   state.profileReady = true;
-  // Souhlas s GDPR (SQL krok 21): dokud sloupce nejsou, checkbox se neukáže
-  // a do databáze se neposílá – jinak by selhalo celé ukládání profilu.
+  // Datum narození a souhlas s GDPR (SQL krok 21): dokud sloupce nejsou, pole se
+  // neukážou a do databáze se neposílají – jinak by selhalo celé ukládání profilu.
   if (data) {
-    state.gdprReady = ('gdpr_consent' in data);
+    state.krok21Ready = ('gdpr_consent' in data) && ('birth_date' in data);
   } else {
-    const { error: eg } = await db.from('member_profiles').select('gdpr_consent').limit(1);
-    state.gdprReady = !eg;
+    const { error: eg } = await db.from('member_profiles').select('gdpr_consent,birth_date').limit(1);
+    state.krok21Ready = !eg;
   }
   // Rozpracované změny nepřepisujeme starší verzí z databáze.
   if (!profilStav.dirty && !profilStav.saving) state.profile = data || {};
 
-  // Admin vidí profily všech včetně RČ (přímo z tabulky).
+  // Admin vidí profily všech včetně data narození (přímo z tabulky).
   const me = getCurrentUser();
   if (me && me.isAdmin) {
     const { data: vse, error: e2 } = await db.from('member_profiles').select('*');
@@ -1315,7 +1316,7 @@ async function loadProfile() {
     return;
   }
 
-  // Ostatní členové vidí profily ostatních bez RČ – pohled z SQL kroku 20.
+  // Ostatní členové vidí profily ostatních bez data narození – pohled z SQL kroku 20.
   // Dokud krok 20 neběžel, hledání členů se jen neukáže.
   const { data: klub, error: e3 } = await db.from('member_profiles_club').select('*');
   if (e3) {
@@ -1328,7 +1329,7 @@ async function loadProfile() {
   state.clubProfilesReady = true;
 }
 
-// Profil jiného člena pro čtení: admin z tabulky (s RČ), ostatní z pohledu (bez RČ).
+// Profil jiného člena pro čtení: admin z tabulky (s datem narození), ostatní z pohledu (bez něj).
 function profilClena(id) {
   if (id === state.currentUserId) {
     return state.profile && state.profile.updated_at ? state.profile : null;
@@ -1370,11 +1371,24 @@ function profilRadek() {
     }
     row[k] = v;
   });
-  if (state.gdprReady) {
+  if (state.krok21Ready) {
+    row.birth_date = platneDatumNarozeni(p.birth_date);
     row.gdpr_consent = !!p.gdpr_consent;
     row.gdpr_consent_at = p.gdpr_consent ? (p.gdpr_consent_at || new Date().toISOString()) : null;
   }
   return row;
+}
+
+// Datum narození jen jako RRRR-MM-DD, reálné a mezi rokem 1920 a dneškem.
+function platneDatumNarozeni(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3]) return null;  // 31. 2. apod.
+  const dnes = new Date();
+  const dnesTxt = dnes.getFullYear() + '-' + String(dnes.getMonth() + 1).padStart(2, '0') + '-' + String(dnes.getDate()).padStart(2, '0');
+  if (v < '1920-01-01' || v > dnesTxt) return null;
+  return v;
 }
 
 function profilZmena() {
@@ -3325,23 +3339,24 @@ function renderMemberProfile() {
         <div class="prof-section">
           <div class="prof-label">Osobní údaje</div>
           <div class="prof-row">
+            ${state.krok21Ready ? `
             <div class="prof-field">
-              <label for="prof-birth-number">Rodné číslo<button type="button" class="prof-help" aria-expanded="false"
-                aria-controls="prof-help-rc" aria-label="K čemu je rodné číslo" onclick="profilNapoveda(this,'rc')">?</button></label>
-              <input type="text" id="prof-birth-number" data-f="birth_number" value="${a(p.birth_number)}"
-                placeholder="000000/0000" maxlength="11" inputmode="numeric" oninput="profilVstup(this)">
-            </div>
+              <label for="prof-birth-date">Datum narození<button type="button" class="prof-help" aria-expanded="false"
+                aria-controls="prof-help-rc" aria-label="K čemu je datum narození" onclick="profilNapoveda(this,'rc')">?</button></label>
+              <input type="date" id="prof-birth-date" data-f="birth_date" value="${a(platneDatumNarozeni(p.birth_date) || '')}"
+                min="1920-01-01" max="${platneDatumNarozeni(new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10)) || ''}" oninput="profilVstup(this)" onchange="profilVstup(this)">
+            </div>` : ''}
             <div class="prof-field">
               <label for="prof-phone">Telefon</label>
               <input type="tel" id="prof-phone" data-f="phone" value="${a(p.phone)}"
                 placeholder="+420 777 000 000" maxlength="20" oninput="profilVstup(this)">
             </div>
           </div>
-          <div class="prof-help-text" id="prof-help-rc" hidden>
-            Rodné číslo vidíš jen ty a admin oddílu – ostatní členové ho neuvidí.
+          ${state.krok21Ready ? `<div class="prof-help-text" id="prof-help-rc" hidden>
+            Datum narození vidíš jen ty a admin oddílu – ostatní členové ho neuvidí.
             Je nutné pro evidenci členů kvůli VSK.
-          </div>
-          ${state.gdprReady ? `
+          </div>` : ''}
+          ${state.krok21Ready ? `
           <div class="prof-gdpr">
             <label class="prof-checkbox-row"><input type="checkbox" id="prof-gdpr" ${p.gdpr_consent ? 'checked' : ''}
               onchange="profilGdpr(this)"> Souhlasím s evidencí osobních údajů dle GDPR</label>
@@ -3438,7 +3453,7 @@ function renderMemberProfile() {
 }
 
 // Lezecký profil člena jen pro čtení (detail člena v adminu i hledání členů).
-// RČ ukazujeme jen adminovi – ostatním ho databáze vůbec nepošle (pohled bez RČ).
+// Datum narození ukazujeme jen adminovi – ostatním ho databáze vůbec nepošle (pohled ho nemá).
 function renderAdminProfil(id) {
   if (!state.profileReady) return '';
   const prof = profilClena(id);
@@ -3473,7 +3488,7 @@ function renderAdminProfil(id) {
     <div class="prof-ro">
       <div class="prof-ro-title">👤 Lezecký profil</div>
       ${badges.length ? `<div class="prof-ro-badges">${badges.map(b => `<span class="prof-ro-badge">${b}</span>`).join('')}</div>` : ''}
-      ${jeAdmin ? radek('RČ', h(prof.birth_number)) : ''}
+      ${jeAdmin && platneDatumNarozeni(prof.birth_date) ? radek('Datum narození', new Date(prof.birth_date + 'T12:00:00').toLocaleDateString('cs-CZ')) : ''}
       ${jeAdmin && ('gdpr_consent' in prof) ? radek('Souhlas GDPR', prof.gdpr_consent
         ? 'ano' + (prof.gdpr_consent_at ? ' (' + new Date(prof.gdpr_consent_at).toLocaleDateString('cs-CZ') + ')' : '') : 'ne') : ''}
       ${radek('Tel', h(prof.phone))}
