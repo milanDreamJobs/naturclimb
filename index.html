@@ -871,6 +871,22 @@
     color: inherit; text-decoration: underline; font-size: inherit;
     font-weight: 700;
   }
+  .clen-search { margin-bottom: 10px; }
+  .clen-search input {
+    width: 100%; padding: 12px 14px; border: 1.5px solid var(--ink); border-radius: 12px;
+    background: var(--paper-translucent); font-family: inherit; font-size: 16px; color: var(--ink);
+  }
+  .clen-search input:focus { outline: none; border-color: var(--primary); }
+  .clen-item {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    background: var(--paper-translucent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    border: 1.5px solid var(--ink); border-radius: 14px; padding: 10px 14px; margin-bottom: 8px;
+    font-family: inherit; color: var(--ink);
+  }
+  .clen-item:active { transform: scale(0.99); }
+  .clen-name { font-family: 'Bricolage Grotesque', sans-serif; font-size: 15px; font-weight: 700; }
+  .clen-sub { font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+  .clen-empty { text-align: center; color: white; text-shadow: 0 2px 6px rgba(0,0,0,.5); font-size: 14px; padding: 16px 0; }
   /* ===== /MEMBER PROFILE ===== */
 </style>
 </head>
@@ -918,6 +934,8 @@ const state = {
   profile: null,
   profileReady: false,
   profilesById: {},
+  clubProfiles: {},
+  clubProfilesReady: false,
   settleReady: false,
   currentUserId: null,
   currentView: 'member',
@@ -1256,20 +1274,45 @@ async function loadProfile() {
   // Rozpracované změny nepřepisujeme starší verzí z databáze.
   if (!profilStav.dirty && !profilStav.saving) state.profile = data || {};
 
-  // Admin vidí profily všech (jen pro čtení).
+  // Admin vidí profily všech včetně RČ (přímo z tabulky).
   const me = getCurrentUser();
   if (me && me.isAdmin) {
     const { data: vse, error: e2 } = await db.from('member_profiles').select('*');
     if (e2) { console.warn('Profily clenu nedostupne:', e2.message || e2); return; }
     state.profilesById = {};
     (vse || []).forEach(r => { state.profilesById[r.id] = r; });
+    state.clubProfilesReady = true;
+    return;
   }
+
+  // Ostatní členové vidí profily ostatních bez RČ – pohled z SQL kroku 20.
+  // Dokud krok 20 neběžel, hledání členů se jen neukáže.
+  const { data: klub, error: e3 } = await db.from('member_profiles_club').select('*');
+  if (e3) {
+    console.warn('Profily clenu nedostupne (bezel SQL krok 20?):', e3.message || e3);
+    state.clubProfilesReady = false;
+    return;
+  }
+  state.clubProfiles = {};
+  (klub || []).forEach(r => { state.clubProfiles[r.id] = r; });
+  state.clubProfilesReady = true;
+}
+
+// Profil jiného člena pro čtení: admin z tabulky (s RČ), ostatní z pohledu (bez RČ).
+function profilClena(id) {
+  if (id === state.currentUserId) {
+    return state.profile && state.profile.updated_at ? state.profile : null;
+  }
+  const me = getCurrentUser();
+  if (me && me.isAdmin) return (state.profilesById || {})[id] || null;
+  return (state.clubProfiles || {})[id] || null;
 }
 
 // Je v profilu něco rozdělaného? Pak s obnovou dat počkáme.
 function profilRozpracovany() {
   if (profilStav.dirty || profilStav.saving || profilStav.tah) return true;
   const a = document.activeElement;
+  if (a && a.id === 'clen-hledat') return true;
   return !!(a && a.closest && a.closest('#profil-karta'));
 }
 
@@ -2081,6 +2124,9 @@ function render() {
   } else if (user.isSaunaAdmin && state.currentView === 'admin') {
     app.innerHTML = renderSaunaAdmin();
     fab.classList.add('hidden');
+  } else if (state.currentView === 'profile' && state.profileReady) {
+    app.innerHTML = renderProfilView();
+    fab.classList.add('hidden');
   } else {
     app.innerHTML = renderMember();
     fab.classList.add('hidden');
@@ -2323,6 +2369,9 @@ async function logout() {
   profilStav.dirty = false; profilStav.saving = false; profilStav.tah = null;
   state.profile = null;
   state.profilesById = {};
+  state.clubProfiles = {};
+  state.clubProfilesReady = false;
+  state.ui.clenHledat = '';
   state.profileReady = false;
   state.ui.profileTab = 'obecne';
   state.ui.authStep = 'email';
@@ -3035,7 +3084,7 @@ function renderMember() {
 
   return `
     ${renderHeader()}
-    ${(user.isAdmin || user.isSaunaAdmin) ? renderModeSwitcher() : ''}
+    ${renderModeSwitcher()}
 
     <div class="account ${accountClass}">
       <div class="account-label">Moje konto</div>
@@ -3130,8 +3179,6 @@ function renderMember() {
       </div>
     ` : ''}
 
-    ${renderMemberProfile()}
-
     <div class="faq-section">
       <div class="section-title">Časté dotazy</div>
       <div class="faq-item">
@@ -3215,7 +3262,7 @@ function renderMemberProfile() {
     data-tab="${id}" onclick="profilTab('${id}')"><span class="prof-tab-icon">${ikona}</span><span>${text}</span></button>`;
 
   return `
-    <div class="section-title" style="margin-top:24px;">👤 Můj profil</div>
+    <div class="section-title" style="margin-top:8px;">👤 Můj profil</div>
     <div class="profile-card" id="profil-karta">
       ${feeLine ? `<div class="prof-top">${feeLine}</div>` : ''}
 
@@ -3331,11 +3378,12 @@ function renderMemberProfile() {
   `;
 }
 
-// Admin: lezecký profil člena jen pro čtení (v detailu člena)
+// Lezecký profil člena jen pro čtení (detail člena v adminu i hledání členů).
+// RČ ukazujeme jen adminovi – ostatním ho databáze vůbec nepošle (pohled bez RČ).
 function renderAdminProfil(id) {
   if (!state.profileReady) return '';
-  const prof = (state.profilesById && state.profilesById[id])
-    || (state.currentUserId === id && state.profile && state.profile.updated_at ? state.profile : null);
+  const prof = profilClena(id);
+  const jeAdmin = !!(getCurrentUser() || {}).isAdmin;
   if (!prof) {
     return `<div class="prof-ro"><div class="prof-ro-title">👤 Lezecký profil</div>Profil zatím nevyplnil.</div>`;
   }
@@ -3366,7 +3414,7 @@ function renderAdminProfil(id) {
     <div class="prof-ro">
       <div class="prof-ro-title">👤 Lezecký profil</div>
       ${badges.length ? `<div class="prof-ro-badges">${badges.map(b => `<span class="prof-ro-badge">${b}</span>`).join('')}</div>` : ''}
-      ${radek('RČ', h(prof.birth_number))}
+      ${jeAdmin ? radek('RČ', h(prof.birth_number)) : ''}
       ${radek('Tel', h(prof.phone))}
       ${radek('Pojištění', prof.insurance && prof.insurance !== 'none' ? pojisteni : '')}
       ${radek('Lezu od', h(prof.year_started))}
@@ -3404,12 +3452,90 @@ function renderHeader() {
 }
 
 function renderModeSwitcher() {
+  const user = getCurrentUser();
+  const btns = [['member', '🧗 Tréninky']];
+  if (state.profileReady) btns.push(['profile', '👤 Můj profil']);
+  if (user && (user.isAdmin || user.isSaunaAdmin)) btns.push(['admin', '⚙ Admin']);
+  if (btns.length < 2) return '';
   return `
     <div class="mode-switcher">
-      <button class="${state.currentView === 'member' ? 'active' : ''}" onclick="setView('member')">🧗 Tréninky</button>
-      <button class="${state.currentView === 'admin' ? 'active' : ''}" onclick="setView('admin')">⚙ Admin</button>
+      ${btns.map(([v, t]) => `<button class="${state.currentView === v ? 'active' : ''}" onclick="setView('${v}')">${t}</button>`).join('')}
     </div>
   `;
+}
+
+// ============================================
+// POHLED "MŮJ PROFIL" + HLEDÁNÍ ČLENŮ
+// ============================================
+function renderProfilView() {
+  return `
+    ${renderHeader()}
+    ${renderModeSwitcher()}
+    ${renderMemberProfile()}
+    ${renderClenove()}
+  `;
+}
+
+function renderClenove() {
+  if (!state.clubProfilesReady) return '';
+  return `
+    <div class="section-title" style="margin-top:8px;">👥 Členové oddílu</div>
+    <div class="clen-search">
+      <input type="search" id="clen-hledat" value="${escapeAttr(state.ui.clenHledat || '')}"
+        placeholder="Hledat člena podle jména…" autocomplete="off" oninput="hledejClena(this.value)">
+    </div>
+    <div id="clen-list">${renderClenSeznam()}</div>
+  `;
+}
+
+function shrnutiProfilu(p) {
+  if (!p) return 'Profil zatím nevyplnil';
+  const styly = PROFIL_STYLY.filter(s => p['style_' + s.key]).map(s => s.label);
+  const casti = [];
+  if (styly.length) casti.push(styly.join(', '));
+  if (p.grade_uiaa_lo || p.grade_uiaa_hi) {
+    const lo = p.grade_uiaa_lo || p.grade_uiaa_hi, hi = p.grade_uiaa_hi || p.grade_uiaa_lo;
+    casti.push('UIAA ' + (lo === hi ? lo : lo + '–' + hi));
+  }
+  if (PROFIL_STYLY.some(s => p['style_' + s.key + '_is_mentor'])) casti.push('mentor');
+  return casti.length ? casti.join(' · ') : 'Profil zatím nevyplnil';
+}
+
+// Filtr se dělá vynecháním z pole (ne schováváním), viz CLAUDE.md.
+function renderClenSeznam() {
+  const q = normText(state.ui.clenHledat || '').trim();
+  const clenove = state.members
+    .filter(m => m.isActive !== false && m.id !== state.currentUserId)
+    .filter(m => !q || normText(m.name).includes(q))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name), 'cs'));
+  if (!clenove.length) {
+    return `<div class="clen-empty">${q ? 'Nikdo takový v oddíle není.' : 'Zatím tu nikdo další není.'}</div>`;
+  }
+  return clenove.map(m => `
+    <button type="button" class="clen-item" onclick="openClenProfil('${escapeAttr(m.id)}')">
+      <div class="clen-name">${escapeAttr(m.name)}</div>
+      <div class="clen-sub">${escapeAttr(shrnutiProfilu(profilClena(m.id)))}</div>
+    </button>`).join('');
+}
+
+// Jen přepíše seznam – políčko hledání zůstane aktivní.
+function hledejClena(q) {
+  state.ui.clenHledat = q;
+  const el = document.getElementById('clen-list');
+  if (el) el.innerHTML = renderClenSeznam();
+}
+
+function openClenProfil(id) {
+  const m = getMember(id);
+  if (!m) return;
+  openModal(`
+    <div class="modal-handle"></div>
+    <button class="modal-close" onclick="closeModal()">×</button>
+    <div class="modal-header">
+      <div class="modal-title">👤 ${escapeAttr(m.name)}</div>
+    </div>
+    ${renderAdminProfil(id)}
+  `);
 }
 
 function setView(view) {
