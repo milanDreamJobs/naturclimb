@@ -124,10 +124,12 @@
   .fee-stamp {
     display: inline-block; margin-top: 6px;
     font-size: 11px; font-weight: 700; letter-spacing: 0.03em;
-    color: var(--green); background: rgba(46,125,50,0.10);
-    border: 1px solid rgba(46,125,50,0.35);
+    color: #1f5530; background: var(--green-dim);
+    border: 1px solid var(--green);
     padding: 3px 9px; border-radius: 999px; white-space: nowrap;
     font-family: 'Bricolage Grotesque', sans-serif;
+    text-shadow: none;  /* hlavicka ma stin pro bily text – razitko ho nesmi zdedit, jinak je rozmazane */
+    box-shadow: 0 1px 4px rgba(0,0,0,0.25);
   }
   .fee-cta {
     background: var(--accent-dim); border: 1px solid rgba(0,0,0,0.06);
