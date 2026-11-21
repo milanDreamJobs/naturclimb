@@ -911,6 +911,25 @@
   }
   .prof-gdpr { margin-top: 4px; }
   .prof-gdpr-date { font-size: 11.5px; color: var(--ink-soft); margin-left: 25px; }
+  .prof-ro-card .prof-star, .prof-ro-card .prof-chip { cursor: default; }
+  .prof-ro-card .prof-chip:hover:not(.on) { border-color: var(--line); color: var(--ink-soft); }
+  .prof-ro-val {
+    min-height: 40px; padding: 9px 11px; border: 1.5px solid var(--line); border-radius: 10px;
+    background: rgba(15,32,39,.03); font-size: 15px; color: var(--ink); overflow-wrap: anywhere;
+  }
+  .prof-ro-val.long { white-space: pre-wrap; min-height: 64px; }
+  .prof-ro-val.empty { color: var(--ink-soft); }
+  .prof-fake {
+    display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+    width: 17px; height: 17px; border: 1.5px solid var(--ink-soft); border-radius: 4px;
+    background: var(--paper); color: #fff; font-size: 12px; font-weight: 700; line-height: 1;
+  }
+  .prof-fake.on { background: var(--primary); border-color: var(--primary); }
+  .prof-fake.round { border-radius: 50%; width: 15px; height: 15px; }
+  .prof-fake.round.on { background: var(--paper); box-shadow: inset 0 0 0 3.5px var(--primary); border-color: var(--primary); }
+  .prof-ro-check { cursor: default; }
+  .prof-ro-card .prof-radio { cursor: default; }
+  .prof-ro-updated { font-size: 11.5px; color: var(--ink-soft); padding: 0 14px 12px; }
   /* ===== /MEMBER PROFILE ===== */
 </style>
 </head>
@@ -1568,9 +1587,9 @@ function renderStars(f, value, opts) {
 }
 
 // --- teploměry obtížnosti (rozsah od–do) ---
-function thermIndexy(sys) {
+function thermIndexy(sys, prof) {
   const t = PROFIL_TEPLOMERY[sys];
-  const p = state.profile || {};
+  const p = prof || state.profile || {};
   const def = t.stupne.indexOf(t.vychozi);
   let lo = t.stupne.indexOf(p[t.lo]);
   let hi = t.stupne.indexOf(p[t.hi]);
@@ -1587,27 +1606,32 @@ function thermPopis(sys, lo, hi) {
   const st = PROFIL_TEPLOMERY[sys].stupne;
   return lo === hi ? st[lo] : st[lo] + ' – ' + st[hi];
 }
-function renderTeplomer(sys) {
+// prof = cizí profil → jen pro čtení (bez tahání, jiné id, nevyplněný bez jezdců)
+function renderTeplomer(sys, prof) {
   const t = PROFIL_TEPLOMERY[sys];
-  const { lo, hi, vyplneno } = thermIndexy(sys);
+  const ro = !!prof;
+  const { lo, hi, vyplneno } = thermIndexy(sys, prof);
   const labels = t.popisky.map(g =>
     `<span style="left:${thermPct(sys, t.stupne.indexOf(g))}%">${g}</span>`).join('');
-  const thumb = (kt, idx) => `<div class="prof-therm-thumb ${kt}" data-kt="${kt}" role="slider" tabindex="0"
+  const thumb = (kt, idx) => ro
+    ? `<div class="prof-therm-thumb ${kt}" style="left:${thermPct(sys, idx)}%;cursor:default"></div>`
+    : `<div class="prof-therm-thumb ${kt}" data-kt="${kt}" role="slider" tabindex="0"
       aria-label="${t.nazev} ${kt === 'lo' ? 'od' : 'do'}" aria-valuemin="0" aria-valuemax="${t.stupne.length - 1}"
       aria-valuenow="${idx}" aria-valuetext="${t.stupne[idx]}" style="left:${thermPct(sys, idx)}%"
       onkeydown="thermKlavesa(event,'${sys}','${kt}')"></div>`;
+  const prazdnyText = ro ? 'Nevyplněno' : 'Nevyplněno – posuň jezdec';
   return `
-    <div class="prof-therm${vyplneno ? '' : ' untouched'}" id="therm-${sys}">
+    <div class="prof-therm${vyplneno ? '' : ' untouched'}" ${ro ? `data-ro-sys="${sys}"` : `id="therm-${sys}"`}>
       <div class="prof-therm-head">
         <span class="prof-therm-sys">${t.nazev}</span>
-        <span class="prof-therm-val${vyplneno ? '' : ' empty'}">${vyplneno ? thermPopis(sys, lo, hi) : 'Nevyplněno – posuň jezdec'}</span>
+        <span class="prof-therm-val${vyplneno ? '' : ' empty'}">${vyplneno ? thermPopis(sys, lo, hi) : prazdnyText}</span>
       </div>
-      <div class="prof-therm-track" data-sys="${sys}"
+      <div class="prof-therm-track" ${ro ? 'style="cursor:default"' : `data-sys="${sys}"
         onpointerdown="thermDolu(event,this)" onpointermove="thermPohyb(event,this)"
-        onpointerup="thermNahoru(event,this)" onpointercancel="thermNahoru(event,this)">
+        onpointerup="thermNahoru(event,this)" onpointercancel="thermNahoru(event,this)"`}>
         <div class="prof-therm-bg"></div>
-        <div class="prof-therm-range" style="left:${thermPct(sys, lo)}%;width:${thermPct(sys, hi) - thermPct(sys, lo)}%"></div>
-        ${thumb('lo', lo)}${thumb('hi', hi)}
+        ${ro && !vyplneno ? '' : `<div class="prof-therm-range" style="left:${thermPct(sys, lo)}%;width:${thermPct(sys, hi) - thermPct(sys, lo)}%"></div>
+        ${thumb('lo', lo)}${thumb('hi', hi)}`}
       </div>
       <div class="prof-therm-labels">${labels}</div>
     </div>`;
@@ -3649,6 +3673,127 @@ function hledejClena(q) {
   if (el) el.innerHTML = renderClenSeznam();
 }
 
+// ============================================
+// CIZÍ PROFIL – stejné UI jako vlastní, jen pro čtení
+// ============================================
+// Běžný člen nevidí datum narození ani souhlas GDPR (databáze mu je ani nepošle),
+// admin je vidí.
+function renderCiziProfil(id) {
+  const p = profilClena(id);
+  if (!p) return `<div class="prof-ro"><div class="prof-ro-title">👤 Lezecký profil</div>Profil zatím nevyplnil.</div>`;
+  const jeAdmin = !!(getCurrentUser() || {}).isAdmin;
+  const h = v => escapeAttr(v == null ? '' : v);
+  const hodnota = (v, dlouhy) => `<div class="prof-ro-val${dlouhy ? ' long' : ''}${v ? '' : ' empty'}">${v ? h(v) : '—'}</div>`;
+  const fajfka = (on, popis) => `<span class="prof-fake${on ? ' on' : ''}" role="img" aria-label="${popis}: ${on ? 'ano' : 'ne'}">${on ? '✓' : ''}</span>`;
+  const radekCheck = (on, text) => `<div class="prof-checkbox-row prof-ro-check">${fajfka(on, text)} ${text}</div>`;
+  const chips = seznam => `<div class="prof-chips">${seznam.map(o =>
+    `<span class="prof-chip${p[o.f] ? ' on' : ''}">${o.label}</span>`).join('')}</div>`;
+  const ins = p.insurance || 'none';
+  const datum = platneDatumNarozeni(p.birth_date);
+
+  const styleRows = PROFIL_STYLY.map(s => {
+    const leze = !!p['style_' + s.key];
+    return `<tr class="${leze ? '' : 'inactive'}">
+      <td>${s.label}</td>
+      <td>${fajfka(leze, 'Leze ' + s.label)}</td>
+      <td>${renderStars('style_' + s.key + '_rating', leze ? p['style_' + s.key + '_rating'] : 0, { compact: true, readonly: true })}</td>
+      <td>${fajfka(leze && p['style_' + s.key + '_mentor'], 'Chce mentora – ' + s.label)}</td>
+      <td>${fajfka(leze && p['style_' + s.key + '_is_mentor'], 'Je mentor – ' + s.label)}</td>
+    </tr>`;
+  }).join('');
+
+  const safetyRows = PROFIL_BEZPECNOST.map(o => `
+    <div class="prof-safety-row">
+      <div class="prof-safety-name">${o.label}</div>
+      ${renderStars(o.f, p[o.f], { readonly: true })}
+    </div>`).join('');
+
+  const tabBtn = (tid, ikona, text, akt) => `<button type="button" class="prof-tab${akt ? ' active' : ''}"
+    data-tab="${tid}" onclick="profilTabCizi('${tid}')"><span class="prof-tab-icon">${ikona}</span><span>${text}</span></button>`;
+
+  return `
+    <div class="profile-card prof-ro-card" id="profil-cizi">
+      <div class="prof-tabs" role="tablist">
+        ${tabBtn('obecne', '👤', 'Obecné', true)}
+        ${tabBtn('styl', '🧗', 'Jak lezu')}
+        ${tabBtn('bezpecnost', '🛡️', 'Bezpečnost')}
+      </div>
+
+      <div class="prof-panel active" data-tab="obecne">
+        <div class="prof-section">
+          <div class="prof-label">Osobní údaje</div>
+          <div class="prof-row">
+            ${jeAdmin && state.krok21Ready ? `
+            <div class="prof-field"><label>Datum narození</label>
+              ${hodnota(datum ? new Date(datum + 'T12:00:00').toLocaleDateString('cs-CZ') : '')}</div>` : ''}
+            <div class="prof-field"><label>Telefon</label>${hodnota(p.phone)}</div>
+          </div>
+          ${jeAdmin && ('gdpr_consent' in p) ? radekCheck(!!p.gdpr_consent, 'Souhlas s evidencí osobních údajů dle GDPR' +
+            (p.gdpr_consent && p.gdpr_consent_at ? ' (' + new Date(p.gdpr_consent_at).toLocaleDateString('cs-CZ') + ')' : '')) : ''}
+        </div>
+
+        <div class="prof-section">
+          <div class="prof-label">Info</div>
+          <div class="prof-row">
+            <div class="prof-field"><label>Leze od roku</label>${hodnota(p.year_started)}</div>
+            <div class="prof-field" style="display:flex;flex-direction:column;justify-content:flex-end;gap:2px;">
+              ${radekCheck(!!p.is_student, 'Student')}
+              ${radekCheck(!!p.is_chs_instructor, 'Instruktor ČHS')}
+            </div>
+          </div>
+          <div class="prof-field"><label>O sobě</label>${hodnota(p.bio, true)}</div>
+          <div class="prof-field"><label>Preferované lokality</label>${hodnota(p.preferred_areas)}</div>
+        </div>
+
+        <div class="prof-section">
+          <div class="prof-label">ČHS a pojištění</div>
+          <div style="margin-bottom:8px;">${radekCheck(!!p.chs_member, 'Člen ČHS')}</div>
+          ${PROFIL_POJISTENI.map(o => `
+            <div class="prof-radio${ins === o.val ? ' selected' : ''}">
+              <span class="prof-fake round${ins === o.val ? ' on' : ''}" aria-hidden="true"></span> ${o.label}
+            </div>`).join('')}
+        </div>
+      </div>
+
+      <div class="prof-panel" data-tab="styl">
+        <div class="prof-section">
+          <div class="prof-label">Obtížnost</div>
+          ${renderTeplomer('uiaa', p)}
+          ${renderTeplomer('sax', p)}
+        </div>
+        <div class="prof-section">
+          <div class="prof-label">Kde leze — styl a preference</div>
+          <div class="prof-table-wrap">
+            <table class="prof-style-table">
+              <thead><tr>
+                <th>Styl</th><th>Leze</th><th>Preference</th><th>Chce<br>mentora</th><th>Je<br>mentor</th>
+              </tr></thead>
+              <tbody>${styleRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="prof-panel" data-tab="bezpecnost">
+        <div class="prof-section"><div class="prof-label">Jistění</div>${chips(PROFIL_JISTENI)}</div>
+        <div class="prof-section"><div class="prof-label">Přilba</div>${chips(PROFIL_PRILBA)}</div>
+        ${('first_aid_kit' in p) ? `
+        <div class="prof-section"><div class="prof-label">Lékárnička</div>
+          <div class="prof-chips">${PROFIL_LEKARNICKA.map(o =>
+            `<span class="prof-chip${p.first_aid_kit === o.val ? ' on' : ''}">${o.label}</span>`).join('')}</div>
+        </div>` : ''}
+        <div class="prof-section"><div class="prof-label">Absolvované kurzy</div>${chips(PROFIL_KURZY)}</div>
+        <div class="prof-section"><div class="prof-label">Sebehodnocení znalostí (1–10)</div>${safetyRows}</div>
+      </div>
+      ${p.updated_at ? `<div class="prof-ro-updated">Aktualizováno ${new Date(p.updated_at).toLocaleDateString('cs-CZ')}</div>` : ''}
+    </div>`;
+}
+
+function profilTabCizi(id) {
+  document.querySelectorAll('#profil-cizi .prof-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === id));
+  document.querySelectorAll('#profil-cizi .prof-panel').forEach(p => p.classList.toggle('active', p.dataset.tab === id));
+}
+
 function openClenProfil(id) {
   const m = getMember(id);
   if (!m) return;
@@ -3657,8 +3802,9 @@ function openClenProfil(id) {
     <button class="modal-close" onclick="closeModal()">×</button>
     <div class="modal-header">
       <div class="modal-title">👤 ${escapeAttr(m.name)}</div>
+      <div class="modal-subtitle">${escapeAttr(shrnutiProfilu(profilClena(id)))}</div>
     </div>
-    ${renderAdminProfil(id)}
+    ${renderCiziProfil(id)}
   `);
 }
 
