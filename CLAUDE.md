@@ -34,6 +34,8 @@ Každá nová funkce musí **bezpečně degradovat**, dokud její SQL neběželo
 - `git` v připojené složce po commitu neumí smazat své `.lock` soubory, dokud není povolené mazání – jinak GitHub Desktop zatuhne.
 - Realtime při **jakékoli** změně v DB (i od jiného člena) zavolá `loadAllData()` + `render()` a přepíše celý `#app`. Formulář, který se ukládá sám (profil), proto drží rozpracované hodnoty ve `state`, ne jen v DOM, a obnova počká, dokud `profilRozpracovany()` vrací true.
 - Do tabulky se posílají jen sloupce ze seznamu (`PROFIL_SLOUPCE`). Když UI pošle sloupec, který v DB není, PostgREST odmítne celý zápis – tak se profil po krok19 nedal uložit vůbec.
+- **Nepovedené načtení dat není odhlášení.** `loadAllData()` vrací `true`/`false` a při chybě **nesmí přepsat** `state` prázdným polem – prázdný seznam členů dřív poslal přihlášeného člověka na přihlašovací obrazovku a ten si zbytečně nechal poslat nový kód. O odhlášení rozhoduje jen Supabase (`getSession()` bez session, `link_my_account` vrátí null). Všude jinde se ukazuje obrazovka „Zkusit znovu" (`state.ui.nacteniSelhalo`, `renderNacteniSelhalo()`).
+- `db.auth.signOut()` bez parametru odhlásí **všechna** zařízení člověka. Používat jen `odhlasToZarizeni()` (`scope: 'local'`) a nikdy ne při chybě spojení.
 - V shellu připojeného počítače není nastavená git identita – commitovat přes `git -c user.name=… -c user.email=…` stejnou, jakou mají předchozí commity.
 
 ## Zásady
